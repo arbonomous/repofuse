@@ -193,14 +193,21 @@
   const CODE_TABS = ["generated/app.py", "test_fused.py", "assistant_ext.py"];
 
   /* ---------------- idea cards (from real local analysis, no model) ---------------- */
-  function renderIdeaCards(cards, recordedPair) {
-    lastIdeas = { cards, recordedPair };
+  function renderIdeaCards(cards, recordedPair, source, provenance) {
+    lastIdeas = { cards, recordedPair, source, provenance };
     const box = $("#ideas-cards");
     $("#code-tabs").innerHTML = "";
     $("#code-content").textContent = "";
     $("#code-view").classList.add("hidden");
     box.classList.remove("hidden");
-    box.innerHTML = `<div class="idea-head">SUGGESTED FROM THE REAL ANALYSIS - local, no model call</div>`;
+    const fromModel = source && source.indexOf("model:") === 0;
+    const head = fromModel
+      ? `SUGGESTED BY ${source.slice(6).toUpperCase()} - 1 paid model call` +
+        (provenance && provenance.usage
+          ? ` (${provenance.usage.input} in / ${provenance.usage.output} out)` : "")
+      : "SUGGESTED FROM THE REAL ANALYSIS - local, no model call";
+    box.innerHTML = `<div class="idea-head">${head}</div>` +
+      (fromModel ? `<p class="idea-fit">Ideas are proposals, not built or tested apps. Their security has not been reviewed.</p>` : "");
     cards.forEach(c => {
       const b = document.createElement("button");
       b.className = "idea-card";
@@ -232,7 +239,8 @@
         runReplay();
       };
       box.querySelector(".offer-back").onclick = () => {
-        if (lastIdeas) renderIdeaCards(lastIdeas.cards, lastIdeas.recordedPair);
+        if (lastIdeas) renderIdeaCards(lastIdeas.cards, lastIdeas.recordedPair,
+                                       lastIdeas.source, lastIdeas.provenance);
       };
       return;
     }
@@ -313,8 +321,13 @@
           setStage("analyze", "done", "exports mapped");
         if (ev.kind === "ideas" && ev.data && ev.data.cards) {
           setStage("architecture", "pending", "pick an idea below");
-          renderIdeaCards(ev.data.cards, snap.recorded_pair);
-          tokenMeter(`ideas from <b>local analysis</b> &middot; 0 model calls made`);
+          renderIdeaCards(ev.data.cards, snap.recorded_pair,
+                          ev.data.source, ev.data.provenance);
+          const p = ev.data.provenance;
+          if (p) setBadge("LIVE &middot; free stages &middot; 1 paid idea call", "live");
+          tokenMeter(p
+            ? `ideas from <b>${p.model}</b> &middot; 1 model call &middot; <b>${p.usage.input}</b> in / <b>${p.usage.output}</b> out`
+            : `ideas from <b>local analysis</b> &middot; 0 model calls made`);
         }
       }
       if (snap.status !== "running") break;
@@ -558,7 +571,10 @@
             }
             if (ev.kind === "blocked") { verdict("STOPPED AT THE PAID BOUNDARY - no model call made", "fail"); log(ev.text); }
             else if (ev.kind === "ideas" && ev.data && ev.data.cards) {
-              renderIdeaCards(ev.data.cards, snap.recorded_pair);
+              renderIdeaCards(ev.data.cards, snap.recorded_pair,
+                              ev.data.source, ev.data.provenance);
+              if (ev.data.provenance)
+                setBadge("LIVE &middot; free stages &middot; 1 paid idea call", "live");
             }
             else if (ev.kind !== "stage_done") log(ev.text);
           });
@@ -569,8 +585,12 @@
           drawGraph({ repos: true, exports: true, repoData: repoLive });
           if (snap.status !== "ideas_ready")
             typeCode("exports", ["exports"], (repoLive[1] ? repoLive[1].exports : []).join("\n"), 1500);
+          const ideaEv = (snap.events || []).find(e => e.kind === "ideas" && e.data && e.data.cards);
+          const ip = ideaEv && ideaEv.data.provenance;
           tokenMeter(snap.status === "ideas_ready"
-            ? `ideas from <b>local analysis</b> &middot; 0 model calls made`
+            ? (ip
+              ? `ideas from <b>${ip.model}</b> &middot; 1 model call &middot; <b>${ip.usage.input}</b> in / <b>${ip.usage.output}</b> out`
+              : `ideas from <b>local analysis</b> &middot; 0 model calls made`)
             : `paid stages: <b>disabled</b> &middot; 0 model calls made`);
         }
         return;

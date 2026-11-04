@@ -62,6 +62,47 @@ Picking an idea does not conjure a build:
   verdict. Turning a picked idea into code is a paid model call and
   stays off until a fresh per-run grant exists.
 
+## Paid idea generation (OFF by default; assistant-hosted qualification)
+
+With the intent blank, Studio first tries the PAID idea path (ideas_ai.py)
+and falls back to the free deterministic ideas.py. The paid path activates
+only when studio/envelope.ideas.json exists AND validates exactly AND
+MODEL_API_KEY / META_API_KEY is present in the process environment. It
+ships DISARMED: only envelope.ideas.EXAMPLE.json is included, and arming
+is a deliberate per-run act under a fresh user grant.
+
+Grant shape: ONE provider count_tokens check + ONE charged idea-suggest
+call for the LIFETIME of the armed envelope. No probe, no retries, no
+heal. The strict ledger lives in studio/paid-ideas/ (repofuse.budget,
+durable on disk; an interrupted reservation is consumed, never reusable) -
+deliberately OUTSIDE the transient per-run workdir, so the single-call
+grant survives runs and server restarts. Consuming the grant is permanent
+until someone deliberately deletes paid-ideas/ to re-arm under a NEW
+grant; the code never resets it. Raw responses and provenance are kept
+per run there too (last 10 retained). Concurrency: the whole
+count/reserve/call/commit flow runs under an exclusive non-blocking flock
+(studio/paid-ideas/idea.lock) plus an in-process thread lock, so a second
+server PROCESS or thread refuses before any traffic - one grant stays one
+call no matter how many servers are started. A host without flock
+(non-POSIX) refuses the paid path outright. The raw model response is retained BEFORE parsing; every
+idea's export citations are re-verified against the actually observed
+exports and unverifiable ideas are discarded. Model cards are labeled
+"SUGGESTED BY <model> - 1 paid model call (X in / Y out)"; local cards say
+"SUGGESTED FROM THE REAL ANALYSIS - local, no model call". Never blended.
+Only export names, pins and license guesses leave the machine - never file
+bodies - and the prompt marks repo data as untrusted.
+
+Key handling: process environment only, via the vault write-file pattern
+at qualification time, deleted after. Never in the repo, logs, browser, or
+chat. No envelope or key ships to the Mac install: the Mac UI stays free
+until a supported secure execution path is grounded (no vault/sandbox key
+on the Mac is assumed). Picking an idea never starts a build by itself;
+paid code generation past idea selection is a separate grant.
+
+Offline tests: `python3 studio/offline_test_ideas_ai.py` - 18 cases over
+every fail-closed path (stub transport, REAL budget machinery, no network,
+no key, no model).
+
 ## The notes preview is the REAL app
 
 The result screen's notes widget talks HTTP to the actual verified example
@@ -103,7 +144,9 @@ post-tag pin, not a tag-commit claim.
 - No live model calls anywhere; no keys; no claim of live paid generation.
 - Idea cards are deterministic proposals from the real static analysis,
   never presented as AI output; picking one still stops at the paid
-  boundary unless it is the recorded build itself.
+  boundary unless it is the recorded build itself. Model-generated cards
+  appear only under an armed per-run envelope, labeled with the model name
+  and real token usage - the two sources are never blended or mislabeled.
 - The unedited AI output FAILED; the working app is assistant-repaired and
   assistant-extended. Unattended AI fusion is the goal, not yet proven.
 - "What's real in this demo?" (top right) states all of this in product.
@@ -119,6 +162,11 @@ post-tag pin, not a tag-commit claim.
 
 - `ideas.py` - deterministic idea suggestion from detected capabilities
   (no model calls).
+- `ideas_ai.py` - the PAID model idea path (off unless armed per run;
+  fails closed on envelope/key/budget/transport/schema guards).
+- `envelope.ideas.EXAMPLE.json` - inert template for the minimal grant
+  shape; the armed file is never shipped.
+- `offline_test_ideas_ai.py` - 18 offline fail-closed tests for ideas_ai.
 - `serve.py` - local server: static UI, /api/fuse (real free pipeline),
   /api/run/<id> (real event stream), /notes* (proxy to the real app).
 - `index.html`, `styles.css`, `app.js` - the UI (vanilla JS).

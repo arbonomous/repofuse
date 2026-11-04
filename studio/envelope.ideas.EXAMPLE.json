@@ -1,0 +1,10 @@
+{
+  "_note": "INACTIVE TEMPLATE. Copy to envelope.ideas.json to arm the PAID idea-suggest path for ONE qualification run - only with an active per-run grant and MODEL_API_KEY in the process environment. Never commit or ship an armed envelope; the Mac install must stay free-mode (no envelope, no key).",
+  "_grant_shape": "ONE provider count_tokens check + ONE charged idea-suggest call. No probe, no retries, no heal. Fresh ledger per run.",
+  "max_calls": 1,
+  "max_count_calls": 1,
+  "max_input_tokens": 6000,
+  "max_output_tokens": 2048,
+  "max_total_input_tokens": 6000,
+  "max_total_output_tokens": 2048
+}
