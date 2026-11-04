@@ -289,6 +289,7 @@
 
   function startBuild(card) {
     if (!lastRunId) return;
+    lastBuildGeneral = true;
     // FREE steering first: the picked idea enters the REAL core prompt
     // bundle for this run's vendored repos (dry run, nothing sent).
     fetch("/api/prepare-bundle", {
@@ -334,6 +335,39 @@
       pollLive(runId, liveSeen);
     }).catch(e => verdict(`resume request failed honestly: ${e}`, "fail"));
   }
+  function serveGeneral(runId) {
+    fetch("/api/build-general/serve", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    }).then(r => r.json()).then(resp => {
+      if (resp.error) { verdict(`serving refused honestly: ${resp.error}`, "fail"); return; }
+      const line = document.createElement("div");
+      line.className = "log-line";
+      line.appendChild(document.createTextNode(
+        "Every gate passed (verified build, reviewer sign-off, whole-tree attestation, reviewed serving contract). The reviewed bytes are live at "));
+      const a = document.createElement("a");
+      a.href = resp.url; a.textContent = resp.url;
+      a.target = "_blank"; a.rel = "noopener"; a.className = "hl";
+      line.appendChild(a);
+      const stop = document.createElement("button");
+      stop.className = "ghost-btn";
+      stop.textContent = "Stop serving";
+      stop.onclick = () => {
+        fetch("/api/build-general/stop", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: runId }),
+        }).then(r => r.json()).then(s => {
+          if (s.stopped) { stop.remove(); logText("Serving stopped: the contained app was terminated and its port closed."); }
+          else logText("Nothing was serving for this run.");
+        });
+      };
+      line.appendChild(document.createTextNode(" "));
+      line.appendChild(stop);
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }).catch(e => verdict(`serve request failed honestly: ${e}`, "fail"));
+  }
+
   function verifyGeneral(runId) {
     setStage("verify", "running", "re-check attestation + sandbox verify");
     fetch("/api/build-general/verify", {
@@ -382,6 +416,7 @@
   }
 
   let lastRunId = null;
+  let lastBuildGeneral = false;
   let liveSeen = 0;
   async function pollLive(runId, startSeen = 0) {
     let seen = startSeen;
@@ -483,6 +518,17 @@
           setStage("glue", "done", "generated, slots only");
         if (ev.kind === "stage_done" && ev.stage === "tests")
           setStage("tests", "done", "generated, test slot only");
+        if (ev.kind === "stage_done" && ev.stage === "verify" && lastBuildGeneral
+            && ev.text && ev.text.indexOf("PASSED") !== -1) {
+          setStage("verify", "done", "sandbox verify passed");
+          if (!document.getElementById("serve-btn")) {
+            const sb = document.createElement("button");
+            sb.id = "serve-btn"; sb.className = "ghost-btn";
+            sb.textContent = "Serve the reviewed app";
+            sb.onclick = () => serveGeneral(runId);
+            logEl.appendChild(sb);
+          }
+        }
         if (ev.kind === "review") {
           const isGeneral = !!(ev.data && ev.data.general);
           setStage("architecture", "done", isGeneral ? "manifest generated" : "plan accepted");

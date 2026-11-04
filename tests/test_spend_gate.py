@@ -79,7 +79,7 @@ def test_unknown_refuses():
 def test_warn_without_ack_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "ACKS", str(tmp_path / "acks"))
     ok, why = serve.spend_safety_gate(_run("warn"))
-    assert not ok and "independent reviewer acknowledgment" in why
+    assert not ok and "independent reviewer signs off" in why
 
 
 def test_warn_with_valid_ack_passes(tmp_path, monkeypatch):

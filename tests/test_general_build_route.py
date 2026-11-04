@@ -144,6 +144,12 @@ def test_armed_mock_reaches_review_pinned(tmp_path, monkeypatch):
     assert os.path.join("generated", "app_adapter.py") in req["files"]
     review_ev = [e for e in run["events"] if e["kind"] == "review"]
     assert review_ev and review_ev[0]["data"]["general"] is True
+    # fixture glue has no top-level `app`: no contract is derived,
+    # stated plainly, and review still proceeds without one
+    no_contract = [e for e in run["events"]
+                   if "No serving contract derived" in e["text"]]
+    assert no_contract and "0 generated modules" in no_contract[0]["text"]
+    assert "serving.json" not in req["files"]
     # NOTHING executed: no sandbox verdict, no pycache
     for base, dirs, files in os.walk(fusion):
         assert "__pycache__" not in dirs
@@ -185,3 +191,46 @@ def test_verify_path_after_out_of_band_attestation(tmp_path, monkeypatch):
         f.write("# tampered\n")
     ok, why, _ = gluereview.check_attestation(fusion_dir, att)
     assert not ok and "changed since review" in why
+
+
+class _FakeServable(_Fake):
+    def chat_completion(self, messages, model="m", max_tokens=4096,
+                        timeout=60, base_url=None, env=None,
+                        reasoning_effort=None, response_format=None):
+        joined = " ".join(m["content"] for m in messages)
+        if "adapter shim code" in joined:
+            return {"content": json.dumps(
+                        {"app_adapter.py": "app = object()\n"}),
+                    "model": "offline-fixture-provider",
+                    "usage": {"prompt_tokens": 10,
+                              "completion_tokens": 5},
+                    "latency_ms": 1, "finish_reason": "stop"}
+        return super().chat_completion(
+            messages, model=model, max_tokens=max_tokens, timeout=timeout,
+            base_url=base_url, env=env, reasoning_effort=reasoning_effort,
+            response_format=response_format)
+
+
+def test_armed_mock_derives_and_pins_serving_contract(tmp_path, monkeypatch):
+    run = _fixture_run(tmp_path, monkeypatch)
+    with open(tmp_path / "envelope.general.json", "w") as f:
+        json.dump({"max_calls": 4, "max_count_calls": 4}, f)
+    fake = _FakeServable()
+    monkeypatch.setattr(model_api, "count_tokens", fake.count_tokens)
+    monkeypatch.setattr(model_api, "chat_completion",
+                        fake.chat_completion)
+    monkeypatch.setenv("MODEL_API_KEY", "fixture-key-not-real")
+    serve.run_general_build(run["run_id"])
+    assert run["status"] == "awaiting_review"
+    fusion = tmp_path / "runs" / f"{run['run_id']}-fusion"
+    derived = [e for e in run["events"]
+               if "Serving contract derived" in e["text"]]
+    assert derived, "contract derivation was not reported"
+    req = json.loads((fusion / "review-request.json").read_text())
+    # the derived contract is INSIDE the pinned tree: the reviewer
+    # attests its exact bytes like any other file
+    assert "serving.json" in req["files"]
+    ok, c = serve.__dict__["serving"] if False else (None, None)
+    from repofuse import serving as serving_mod
+    ok, c = serving_mod.load_contract(str(fusion / "fused_app"))
+    assert ok and c["module"] == "generated.app_adapter"

@@ -39,9 +39,10 @@ def execution_symlinks(fusion_dir):
     a symlink would smuggle UNATTESTED bytes into execution. Presence of
     one must fail the review gate, never be silently skipped."""
     hits = []
-    probe = os.path.join(fusion_dir, "test_fused.py")
-    if os.path.islink(probe):
-        hits.append("test_fused.py")
+    for probe_name in ("test_fused.py", "serving.json"):
+        probe = os.path.join(fusion_dir, probe_name)
+        if os.path.islink(probe):
+            hits.append(probe_name)
     for sub in ("generated", "vendor"):
         root = os.path.join(fusion_dir, sub)
         if not os.path.isdir(root):
@@ -80,9 +81,14 @@ def vendored_targets(fusion_dir):
 
 def review_targets(fusion_dir):
     """Everything the sandbox can execute: model-generated files plus the
-    entire vendored tree."""
-    return sorted(generated_targets(fusion_dir)
-                  + vendored_targets(fusion_dir))
+    entire vendored tree. serving.json directs execution (the served
+    child's command line is built from it), so it is pinned and
+    reviewed like any other byte."""
+    targets = sorted(generated_targets(fusion_dir)
+                     + vendored_targets(fusion_dir))
+    if os.path.isfile(os.path.join(fusion_dir, "serving.json")):
+        targets.append("serving.json")
+    return sorted(targets)
 
 
 def _sha256(path):
