@@ -189,6 +189,13 @@ def run_tests_isolated(fusion_dir, timeout=90, exclude_files=(),
         out["behavioral"] = "not_run_no_isolation"
         return out
 
+    links = gluereview.execution_symlinks(fusion_dir)
+    if links:
+        return {"status": "refused", "stage": "review",
+                "detail": ("symlinks in the execution tree would be "
+                           "RESOLVED by the sandbox copy, executing "
+                           "unreviewed bytes - refusing: "
+                           + ", ".join(links))}
     scratch = tempfile.mkdtemp(prefix="repofuse-sbx-")
     work = os.path.join(scratch, "work")
     sbox_tmp = os.path.join(scratch, "sbox-tmp")

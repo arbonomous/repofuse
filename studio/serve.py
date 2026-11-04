@@ -117,7 +117,8 @@ def _load_pipeline():
         sys.path.insert(0, REPO_ROOT)
     from repofuse import analyze as analyze_mod    # noqa: PLC0415
     from repofuse import ingest as ingest_mod      # noqa: PLC0415
-    return ingest_mod, analyze_mod
+    from repofuse import safety as safety_mod      # noqa: PLC0415
+    return ingest_mod, analyze_mod, safety_mod
 
 
 def run_pipeline(run_id, repo_a, repo_b, intent):
@@ -127,7 +128,7 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
     workdir = os.path.join(RUNS, run_id)
     try:
         try:
-            ingest_mod, analyze_mod = _load_pipeline()
+            ingest_mod, analyze_mod, safety_mod = _load_pipeline()
         except Exception as e:
             emit(run, "ingest", "error",
                  "repofuse package not importable from this checkout "
@@ -176,6 +177,66 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
                  {"slug": slug, "exports": a["exports"][:24]})
         emit(run, "analyze", "stage_done", "Exports mapped.")
 
+        # Safety qualification: the same real gate as the CLI. Static
+        # scan + dependency inventory + live OSV advisory (repo commit +
+        # pinned direct deps only). fail or unknown stops the run BEFORE
+        # ideas or any paid stage; warn carries on to the FREE stages with
+        # the caveat shown - spending and execution stay gated elsewhere
+        # (paid boundary + attestation), never by this screen.
+        verdicts = {}
+        for slug, meta in metas.items():
+            emit(run, "safety", "log",
+                 f"Qualifying {slug}: static scan, dependency inventory, "
+                 "live vulnerability advisory ...")
+            v = safety_mod.qualify_repo(
+                slug, meta["path"],
+                deps=meta["analysis"].get("dependencies", {}),
+                repo_commit=meta.get("commit_sha"),
+                allow_network=True)
+            v["commit"] = meta.get("commit_sha")
+            verdicts[slug] = v
+            emit(run, "safety", "safety_verdict",
+                 f"{slug}: {v['status'].upper()} - static "
+                 f"{v['static']['status']} "
+                 f"({len(v['static']['findings'])} matching signal(s)); "
+                 f"advisory {v['dependencies']['status']}: "
+                 f"{v['dependencies']['note']}",
+                 {"slug": slug, "status": v["status"],
+                  "findings": v["static"]["findings"][:10],
+                  "advisory_status": v["dependencies"]["status"],
+                  "queries_made": v["dependencies"]["queries_made"]})
+        run_verdict = safety_mod.qualify_run(list(verdicts.values()))
+        with _lock:
+            run["run_id"] = run_id
+            run["safety"] = run_verdict
+        try:
+            os.makedirs(RUNS, exist_ok=True)
+            with open(os.path.join(RUNS, f"{run_id}-safety.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"run_id": run_id, "verdict": run_verdict},
+                          f, indent=2)
+        except OSError:
+            pass  # the in-memory verdict remains authoritative
+        if any(v["blocking"] for v in verdicts.values()):
+            emit(run, "safety", "safety_blocked",
+                 "STOPPED - safety qualification: a required check failed "
+                 "or is unknown (an unreachable advisory read counts as "
+                 "unknown). Nothing was spent and nothing will execute. "
+                 + run_verdict["honesty"])
+            with _lock:
+                run["status"] = "stopped_safety_blocked"
+            return
+        if run_verdict["status"] == "warn":
+            emit(run, "safety", "log",
+                 "WARN present: free stages may continue, but spending and "
+                 "execution require an explicit reviewer acknowledgment - "
+                 "this screen never grants it. Static findings are "
+                 "matching signals, not proof of absence; an empty "
+                 "advisory result does not establish indexed coverage.")
+        emit(run, "safety", "stage_done",
+             "Safety qualification complete: "
+             f"{run_verdict['status'].upper()}.")
+
         if not intent:
             # Ideas mode. PAID path (model-generated cards) only when an
             # envelope + key are really configured; every guard failure
@@ -192,7 +253,15 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
                 return
             cards, prov = None, None
             paid_attempt = None
+            gate_ok, gate_why = spend_safety_gate(
+                dict(run, run_id=run_id))
+            if not gate_ok:
+                emit(run, "ideas", "log",
+                     "PAID idea-suggest refused by the safety gate "
+                     "BEFORE any count or provider call: " + gate_why)
             try:
+                if not gate_ok:
+                    raise ideas_ai.NotConfigured()
                 cards, prov = ideas_ai.suggest_with_model(metas, run_id)
             except ideas_ai.NotConfigured:
                 pass  # paid path off: normal free mode, no note needed
@@ -479,11 +548,14 @@ def run_build(run_id, card):
         except build_ai.NotConfigured:
             emit(run, "architecture", "blocked",
                  "Build generation is not armed: no envelope.build.json "
-                 "and no key. The idea-to-build path is wired end to "
-                 "end; the first real build needs its own bounded grant "
-                 "(3 model calls: architecture, glue, tests). The repos "
-                 "were re-pinned and re-analyzed just now - nothing was "
-                 "pretended.",
+                 "and no key. The first real build needs its own bounded "
+                 "grant (3 model calls: architecture, glue, tests). The "
+                 "chosen repos were re-pinned and re-analyzed just now, "
+                 "but note exactly what this path is: generated code "
+                 "would still execute against the REVIEWED EXAMPLE's "
+                 "vendored dependencies (copied, not rebuilt from your "
+                 "chosen repos). Fusing chosen repos into the executed "
+                 "tree is not yet built - nothing was pretended.",
                  {"paid_attempt": None})
             with _lock:
                 run["status"] = "stopped_at_paid_boundary"
@@ -615,6 +687,77 @@ def _vendor_matches_repo(app_dir):
                         f.read()).hexdigest()
         return t
     return tree(src) == tree(dst)
+
+
+# ---------------- spend gate: safety before any paid call ----------------
+# Independent safety acknowledgments live OUTSIDE every run dir and are
+# NEVER written via HTTP: only an out-of-band reviewer (or a reviewed
+# automation) can create studio/safety-acks/<run_id>.json. The browser
+# cannot self-approve.
+ACKS = (os.environ.get("REPOFUSE_SAFETY_ACKS")
+        or os.path.join(ROOT, "safety-acks"))
+
+
+def _verdict_hash(verdict):
+    blob = json.dumps(verdict, sort_keys=True).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _run_pins(run):
+    """Commit pins this run actually ingested, from its own events."""
+    pins = {}
+    for ev in run.get("events", []):
+        d = ev.get("data") or {}
+        if d.get("slug") and d.get("commit"):
+            pins[d["slug"]] = d["commit"]
+    return pins
+
+
+def spend_safety_gate(run):
+    """Fail-closed check BEFORE any count/provider call or execution
+    stage. Returns (ok, reason). A run may spend only when its safety
+    verdict (a) exists from THIS run's live qualification, (b) is bound
+    to the exact commits the run pinned, and (c) is not fail/unknown.
+    warn additionally requires an independent acknowledgment file whose
+    run_id, commits, and verdict hash all match the CURRENT verdict -
+    no stale or arbitrary JSON is trusted."""
+    verdict = (run or {}).get("safety")
+    if not verdict:
+        return False, ("no safety qualification on record for this run; "
+                       "refusing spend (fail-closed)")
+    pins = _run_pins(run)
+    covered = {v.get("repo"): v.get("commit")
+               for v in verdict.get("repos", [])}
+    if not pins or covered != pins:
+        return False, ("safety verdict is not bound to this run's "
+                       "pinned commits; refusing spend (fail-closed)")
+    status = verdict.get("status")
+    if status in ("fail", "unknown"):
+        return False, (f"safety verdict is {status}: a required check "
+                       "failed or could not run; spending is refused")
+    if status != "warn":
+        return True, "safety verdict pass"
+    ack_path = os.path.join(ACKS, f"{run.get('run_id', '')}.json")
+    try:
+        with open(ack_path, encoding="utf-8") as f:
+            ack = json.load(f)
+    except (OSError, ValueError):
+        try:
+            shown = os.path.relpath(ack_path, ROOT)
+        except ValueError:
+            shown = "safety-acks/<run_id>.json"
+        return False, ("safety verdict is warn: spending requires an "
+                       "independent reviewer acknowledgment "
+                       f"({shown}); the browser cannot grant it")
+    if ack.get("run_id") != run.get("run_id"):
+        return False, "acknowledgment run_id mismatch"
+    if ack.get("commits") != pins:
+        return False, ("acknowledgment pins do not match this run's "
+                       "commits; re-review required")
+    if ack.get("verdict_hash") != _verdict_hash(verdict):
+        return False, ("acknowledgment does not match the current "
+                       "verdict bytes; re-review required")
+    return True, "warn acknowledged by independent reviewer record"
 
 
 def _load_approval(run_id):
@@ -1048,6 +1191,12 @@ class Handler(BaseHTTPRequestHandler):
                                    "not ideas_ready"})
             if _active_runs >= MAX_ACTIVE_RUNS:
                 return self._json(429, {"error": "too many active runs"})
+            gate_ok, gate_why = spend_safety_gate(
+                dict(run, run_id=run_id))
+            if not gate_ok:
+                return self._json(403, {
+                    "error": "safety gate refused this build BEFORE any "
+                             "count or provider call: " + gate_why})
         threading.Thread(target=run_build, args=(run_id, card),
                          daemon=True).start()
         return self._json(200, {"run_id": run_id, "status": "running"})
@@ -1127,7 +1276,8 @@ class Handler(BaseHTTPRequestHandler):
                 run = _runs.get(rid)
                 snap = None if not run else {
                     "status": run["status"], "events": list(run["events"]),
-                    "recorded_pair": run["recorded_pair"]}
+                    "recorded_pair": run["recorded_pair"],
+                    "safety": run.get("safety")}
             return self._json(200 if snap else 404,
                               snap or {"error": "unknown run"})
         if NOTES_PATH.match(path):

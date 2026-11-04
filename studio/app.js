@@ -1,8 +1,10 @@
 /* RepoFuse Studio.
    Two honest modes:
    - LIVE (free stages): your pasted repos are really cloned, pinned,
-     license-checked and analyzed by the local server. Stops at the paid
-     boundary (model calls disabled).
+     license-checked, analyzed, and safety-qualified (static scan,
+     dependency inventory, live OSV advisory) by the local server. A
+     failed or unknown required check stops the run here. Stops at the
+     paid boundary (model calls disabled).
    - REPLAY: only for the recorded microdot+peewee notes run (2026-11-04);
      replays its real artifacts, with the AI's original bytes and the
      assistant's later repairs/extensions clearly separated. */
@@ -83,6 +85,14 @@
 
   /* ---------------- log ---------------- */
   const logEl = $("#build-log");
+  function logText(text, cls) {
+    // Server-supplied values (repo names, findings, verdict notes) are
+    // UNTRUSTED: they render as text, never markup.
+    const line = document.createElement("div");
+    line.className = "log-line" + (cls ? " " + cls : "");
+    line.textContent = text;
+    logEl.appendChild(line);
+  }
   function log(html) {
     const line = document.createElement("div");
     line.className = "log-line";
@@ -298,6 +308,7 @@
     buildRail([
       { id: "ingest", label: "Ingest (real)" },
       { id: "analyze", label: "Analyze (real)" },
+      { id: "safety", label: "Safety checks (real)" },
       { id: "architecture", label: "Architecture" },
       { id: "glue", label: "Glue synthesis" },
       { id: "tests", label: "Test synthesis" },
@@ -309,6 +320,7 @@
     $("#ideas-cards").classList.add("hidden");
     $("#code-view").classList.remove("hidden");
     setStage("ingest", "running");
+    setStage("safety", "pending");
     setStage("architecture", "pending");
     log(`Run <span class="hl">${resp.run_id}</span> started - <span class="hl">real free stages</span>, paid generation disabled.`);
     if (resp.recorded_pair)
@@ -325,6 +337,43 @@
       const snap = await fetch("/api/run/" + runId).then(r => r.json());
       for (; seen < snap.events.length; seen++) {
         const ev = snap.events[seen];
+        if (ev.stage === "safety") {
+          if (ev.kind === "safety_verdict" && ev.data) {
+            setStage("safety", "running");
+            const cls = ev.data.status === "pass" ? "ok"
+              : ev.data.status === "warn" ? "warn"
+              : "bad";
+            logText(ev.text);
+            const mark = document.createElement("div");
+            mark.className = "log-line";
+            const span = document.createElement("span");
+            span.className = cls;
+            span.textContent = "  verdict: " + String(ev.data.status)
+              .toUpperCase() + " - advisory queries made: "
+              + String(ev.data.queries_made);
+            mark.appendChild(span);
+            logEl.appendChild(mark);
+            continue;
+          }
+          if (ev.kind === "safety_blocked") {
+            setStage("safety", "blocked", "fail/unknown - stopped");
+            setStage("architecture", "pending");
+            logText(ev.text);
+            verdict("STOPPED BY SAFETY CHECKS - a required check failed "
+                    + "or is unknown; nothing spent, nothing executed",
+                    "fail");
+            continue;
+          }
+          if (ev.kind === "stage_done") {
+            const meta = snap.safety && snap.safety.status === "warn"
+              ? "warn - review needed before spend/execute" : "qualified";
+            setStage("safety", "done", meta);
+            logText(ev.text);
+            continue;
+          }
+          logText(ev.text);
+          continue;
+        }
         if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${ev.text}`); verdict(ev.text, "fail"); }
         else if (ev.kind === "blocked") {
           setStage("architecture", "blocked", "needs model grant");
@@ -363,8 +412,10 @@
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "running");
         }
-        if (ev.kind === "stage_done" && ev.stage === "analyze")
+        if (ev.kind === "stage_done" && ev.stage === "analyze") {
           setStage("analyze", "done", "exports mapped");
+          setStage("safety", "running");
+        }
         if (ev.kind === "review") {
           setStage("architecture", "done", "plan accepted");
           setStage("glue", "done", "generated + linted");
@@ -737,6 +788,7 @@
           setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
           show("#screen-build");
           buildRail([{ id: "ingest", label: "Ingest (real)" }, { id: "analyze", label: "Analyze (real)" },
+                     { id: "safety", label: "Safety checks (real)" },
                      { id: "architecture", label: "Architecture" }, { id: "glue", label: "Glue synthesis" },
                      { id: "tests", label: "Test synthesis" }, { id: "verify", label: "Verify" }]);
           const repoLive = [];
@@ -763,6 +815,9 @@
           });
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "done", "exports mapped");
+          if (snap.safety)
+            setStage("safety", snap.safety.status === "fail" || snap.safety.status === "unknown" ? "blocked" : "done",
+                     `verdict: ${snap.safety.status}`);
           setStage("architecture", snap.status === "ideas_ready" ? "pending" : "blocked",
                    snap.status === "ideas_ready" ? "pick an idea below" : "needs model grant");
           drawGraph({ repos: true, exports: true, repoData: repoLive });
