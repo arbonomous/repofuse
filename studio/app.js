@@ -309,6 +309,7 @@
       { id: "ingest", label: "Ingest (real)" },
       { id: "analyze", label: "Analyze (real)" },
       { id: "safety", label: "Safety checks (real)" },
+      { id: "vendor", label: "Vendor (real)" },
       { id: "architecture", label: "Architecture" },
       { id: "glue", label: "Glue synthesis" },
       { id: "tests", label: "Test synthesis" },
@@ -321,6 +322,7 @@
     $("#code-view").classList.remove("hidden");
     setStage("ingest", "running");
     setStage("safety", "pending");
+    setStage("vendor", "pending");
     setStage("architecture", "pending");
     log(`Run <span class="hl">${resp.run_id}</span> started - <span class="hl">real free stages</span>, paid generation disabled.`);
     if (resp.recorded_pair)
@@ -368,6 +370,7 @@
             const meta = snap.safety && snap.safety.status === "warn"
               ? "warn - review needed before spend/execute" : "qualified";
             setStage("safety", "done", meta);
+            setStage("vendor", "running");
             logText(ev.text);
             continue;
           }
@@ -415,6 +418,13 @@
         if (ev.kind === "stage_done" && ev.stage === "analyze") {
           setStage("analyze", "done", "exports mapped");
           setStage("safety", "running");
+        }
+        if (ev.kind === "stage_done" && ev.stage === "vendor") {
+          setStage("vendor", "done",
+                   snap.vendor ? `${snap.vendor.files} files vendored, inert` : "vendored, inert");
+        }
+        if (ev.kind === "error" && ev.stage === "vendor") {
+          setStage("vendor", "blocked", "failed honestly");
         }
         if (ev.kind === "review") {
           setStage("architecture", "done", "plan accepted");
@@ -789,6 +799,7 @@
           show("#screen-build");
           buildRail([{ id: "ingest", label: "Ingest (real)" }, { id: "analyze", label: "Analyze (real)" },
                      { id: "safety", label: "Safety checks (real)" },
+                     { id: "vendor", label: "Vendor (real)" },
                      { id: "architecture", label: "Architecture" }, { id: "glue", label: "Glue synthesis" },
                      { id: "tests", label: "Test synthesis" }, { id: "verify", label: "Verify" }]);
           const repoLive = [];
@@ -818,6 +829,8 @@
           if (snap.safety)
             setStage("safety", snap.safety.status === "fail" || snap.safety.status === "unknown" ? "blocked" : "done",
                      `verdict: ${snap.safety.status}`);
+          if (snap.vendor)
+            setStage("vendor", "done", `${snap.vendor.files} files vendored, inert`);
           setStage("architecture", snap.status === "ideas_ready" ? "pending" : "blocked",
                    snap.status === "ideas_ready" ? "pick an idea below" : "needs model grant");
           drawGraph({ repos: true, exports: true, repoData: repoLive });

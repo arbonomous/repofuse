@@ -121,6 +121,87 @@ def _load_pipeline():
     return ingest_mod, analyze_mod, safety_mod
 
 
+def _vendor_stage(run, run_id, metas):
+    """FREE selected-code connection: the fused app tree is built from
+    THIS run's pinned clones (plan manifest + acceptance criteria +
+    vendored code + import shim), exactly the CLI's pre-synthesis
+    stages. Bytes only - nothing imports or executes them. Returns
+    True on success; on any failure emits an honest error and returns
+    False."""
+    try:
+        from repofuse import plan as plan_mod                 # noqa: PLC0415
+        from repofuse import acceptance as accept_mod         # noqa: PLC0415
+        from repofuse import vendor as vendor_mod             # noqa: PLC0415
+        from repofuse import synthesize as synth_mod          # noqa: PLC0415
+    except Exception as e:
+        emit(run, "vendor", "error",
+             f"vendor stage unavailable honestly: {e}")
+        return False
+    fusion_root = os.path.join(RUNS, f"{run_id}-fusion")
+    fusion_dir = os.path.join(fusion_root, "fused_app")
+    vmetas = list(metas.values())
+    analyses = [m["analysis"] for m in vmetas]
+    try:
+        manifest = plan_mod.build_manifest(vmetas, analyses)
+        criteria = accept_mod.derive_criteria(manifest, analyses)
+        manifest["acceptance_criteria"] = criteria
+        vendor_manifest = vendor_mod.vendor_repos(vmetas, fusion_dir)
+        vendor_mod.write_import_shim(fusion_dir)
+        for name, doc in (("fuse_manifest.json", manifest),
+                          ("acceptance.json", criteria),
+                          ("vendor_manifest.json", vendor_manifest)):
+            with open(os.path.join(fusion_root, name), "w",
+                      encoding="utf-8") as f:
+                json.dump(doc, f, indent=2, sort_keys=True)
+    except Exception as e:
+        emit(run, "vendor", "error", f"vendoring failed honestly: {e}")
+        return False
+    nfiles = len(vendor_manifest["hashes"])
+    emit(run, "vendor", "log",
+         "Plan manifest from the real analyses: "
+         f"{len(manifest['conflicts'])} conflict(s), "
+         f"{len(manifest['boundary_candidates'])} boundary candidate(s); "
+         f"{len(criteria)} derived acceptance criteria.")
+    emit(run, "vendor", "log",
+         f"Vendored the SELECTED repos' real code: {nfiles} files under "
+         "fused_app/vendor/ ("
+         + ("TRUNCATED at the 5000-file bound" 
+            if vendor_manifest["truncated"] else "complete")
+         + "), every file sha256 readback-verified against the pinned "
+         "clone; licenses retained verbatim.")
+    for e in vendor_manifest["repos"]:
+        emit(run, "vendor", "log",
+             f"vendor/{e['slug']}: commit "
+             f"{(e['commit_sha'] or '?')[:12]}, license "
+             f"{e['license_guess'] or 'NONE FOUND'} retained.")
+    emit(run, "vendor", "log",
+         "These bytes are INERT: nothing has imported or executed them. "
+         "Execution requires the independent byte-review attestation "
+         "(symlinks fail it) and, on a warn verdict, the reviewer "
+         "acknowledgment.")
+    try:
+        msgs = synth_mod.build_architecture_prompt(manifest, vmetas)
+        plen = sum(len(m.get("content", "")) for m in msgs)
+        emit(run, "vendor", "log",
+             f"Architecture-synthesis prompt PREPARED ({plen} chars) - "
+             "NOT sent: no model grant, no key. This is a dry run, not "
+             "a generated app.")
+    except Exception as e:
+        emit(run, "vendor", "log",
+             f"prompt preparation skipped honestly: {e}")
+    with _lock:
+        run["vendor"] = {"files": nfiles,
+                         "truncated": vendor_manifest["truncated"],
+                         "conflicts": len(manifest["conflicts"]),
+                         "boundary_candidates":
+                             len(manifest["boundary_candidates"]),
+                         "fusion_dir": os.path.relpath(fusion_root, ROOT)}
+    emit(run, "vendor", "stage_done",
+         f"Selected code vendored ({nfiles} files, inert, review-gated).",
+         {"files": nfiles, "truncated": vendor_manifest["truncated"]})
+    return True
+
+
 def run_pipeline(run_id, repo_a, repo_b, intent):
     global _active_runs
     with _lock:
@@ -237,6 +318,11 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
              "Safety qualification complete: "
              f"{run_verdict['status'].upper()}.")
 
+        if not _vendor_stage(run, run_id, metas):
+            with _lock:
+                run["status"] = "failed"
+            return
+
         if not intent:
             # Ideas mode. PAID path (model-generated cards) only when an
             # envelope + key are really configured; every guard failure
@@ -335,7 +421,15 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
         with _lock:
             _active_runs -= 1
             while len(_runs) > MAX_RETAINED_RUNS:
-                _runs.pop(next(iter(_runs)))
+                old_id = next(iter(_runs))
+                _runs.pop(old_id)
+                for suffix in ("", "-fusion", "-build"):
+                    shutil.rmtree(os.path.join(RUNS, old_id + suffix),
+                                  ignore_errors=True)
+                try:
+                    os.unlink(os.path.join(RUNS, old_id + "-safety.json"))
+                except OSError:
+                    pass
 
 
 # ---------------- real notes backend (owned, probed) ----------------
@@ -1277,7 +1371,8 @@ class Handler(BaseHTTPRequestHandler):
                 snap = None if not run else {
                     "status": run["status"], "events": list(run["events"]),
                     "recorded_pair": run["recorded_pair"],
-                    "safety": run.get("safety")}
+                    "safety": run.get("safety"),
+                    "vendor": run.get("vendor")}
             return self._json(200 if snap else 404,
                               snap or {"error": "unknown run"})
         if NOTES_PATH.match(path):
