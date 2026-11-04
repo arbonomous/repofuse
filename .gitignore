@@ -1,0 +1,28 @@
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+.vault/
+*.pem
+*.key
+# Python/build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+# Local run/account/review/spending artifacts
+studio/runs/
+studio/paid-ideas/
+studio/paid-build/
+studio/safety-acks/
+studio/build-approvals/*.json
+studio/envelope.general.json
+studio/envelope.build.json
+studio/envelope.ideas.json
+# Generated local evidence/downloads, not checked-in examples
+downloads/
+recordings/
+*.log
