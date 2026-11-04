@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "kind": "python-wsgi",
+  "module": "generated.app",
+  "app_object": "app",
+  "readiness_path": "/",
+  "readiness_status": 200,
+  "spawn_secrets": {
+    "REPOFUSE_APP_SECRET": "random-hex-32"
+  }
+}
