@@ -749,14 +749,22 @@ def _probe_owns_backend(base, token):
     return _probe_owns(base, token, "/notes", "text")
 
 
-def _spawn_owned(app_dir, runner_snippet, probe_path, probe_field, db_base):
+def _spawn_owned(app_dir, runner_snippet, probe_path, probe_field, db_base,
+                 stable_db=False):
     """Spawn OUR copy of an app on a random loopback port and prove
-    ownership. Never trusts a pre-existing service on any port."""
+    ownership. Never trusts a pre-existing service on any port.
+    stable_db=False (default): each spawn gets an isolated random-token
+    database (acceptance/probe verification stays hermetic). stable_db=True
+    (the registered LIVE build only): the spawn reuses the one deterministic
+    per-run database, so notes survive backend/server restarts; existing
+    ephemeral databases are never migrated or touched."""
     os.makedirs(os.path.dirname(db_base + ".db") or ".", exist_ok=True)
     for _ in range(2):  # bounded attempts
         port = _free_loopback_port()
         token = secrets.token_hex(8)
-        env = _child_env({"FUSED_DB_PATH": f"{db_base}-{token}.db"})
+        env = _child_env({"FUSED_DB_PATH":
+                          (db_base + ".db") if stable_db
+                          else f"{db_base}-{token}.db"})
         proc = subprocess.Popen(
             [sys.executable, "-c", runner_snippet % port],
             cwd=app_dir, env=env,
@@ -890,7 +898,9 @@ def ensure_build_backend(run_id):
         return None  # bytes changed since review - refuse to execute
     proc, port = _spawn_owned(app_dir, BUILD_RUNNER, prefix,
                               field,
-                              os.path.join(RUNS, f"{run_id}-build", "live"))
+                              os.path.join(RUNS, f"{run_id}-build",
+                                           f"live-{run_id}"),
+                              stable_db=True)
     with _lock:
         if port:
             b["proc"], b["port"] = proc, port
