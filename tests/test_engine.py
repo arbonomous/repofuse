@@ -242,11 +242,19 @@ class HealAndPackageTest(unittest.TestCase):
 
     def test_heal_pending_without_key_on_failure(self):
         import tempfile
-        from repofuse import heal as heal_mod
+        from repofuse import heal as heal_mod, gluereview
         tmp = tempfile.mkdtemp(prefix="repofuse-heal-")
+        fusion = os.path.join(tmp, "fused_app")
+        gen = os.path.join(fusion, "generated")
+        os.makedirs(gen)
+        open(os.path.join(gen, "app.py"), "w").write("X = 1\n")
+        open(os.path.join(fusion, "test_fused.py"), "w").write("pass\n")
+        att = os.path.join(tmp, "attest.json")
+        gluereview.write_attestation(fusion, att)
         env = {k: v for k, v in os.environ.items()
                if k not in ("MODEL_API_KEY", "META_API_KEY")}
-        res = heal_mod.auto_heal(tmp, {"status": "failed", "stderr": "boom"}, env=env)
+        res = heal_mod.auto_heal(tmp, {"status": "failed", "stderr": "boom"},
+                                 env=env, attestation_path=att)
         self.assertEqual(res["status"], "pending_no_key")
 
     def test_package_emits_unverified_dockerfile(self):
@@ -361,7 +369,8 @@ class HardeningTest(unittest.TestCase):
                 budget.reserve(f"s{i}", 11000, 4096)
             with self.assertRaises(BudgetExceeded):
                 budget.reserve("s6", 11000, 4096)
-            # 5) probe disagreement aborts
+            # 5) probe asserts NO numeric count/usage relationship (docs
+            # contradict on injected tokens): a large mismatch still passes
             model_api.count_tokens = lambda *a, **k: 10
             model_api.chat_completion = lambda *a, **k: {
                 "content": "ready", "model": "m",
@@ -369,12 +378,39 @@ class HardeningTest(unittest.TestCase):
                 "latency_ms": 1}
             budget2 = Budget(os.path.join(tmp, "budget2.json"))
             probe = synth_mod.run_probe(tmp, budget2, env={})
+            self.assertEqual(probe["status"], "ok", probe)
+            # 6) probe fails only when usage.prompt_tokens is absent
+            model_api.chat_completion = lambda *a, **k: {
+                "content": "ready", "model": "m", "usage": {},
+                "latency_ms": 1}
+            probe = synth_mod.run_probe(
+                tmp, Budget(os.path.join(tmp, "budget5.json")), env={})
             self.assertEqual(probe["status"], "failed")
-            self.assertIn("disagrees", probe["detail"])
+            self.assertIn("usage.prompt_tokens", probe["detail"])
         finally:
             model_api.have_model_key = orig_have
             model_api.count_tokens = orig_count
             model_api.chat_completion = orig_chat
+
+    def test_heal_refuses_without_real_reviewed_glue(self):
+        import tempfile
+        from repofuse import heal as heal_mod, gluereview
+        tmp = tempfile.mkdtemp(prefix="repofuse-healguard-")
+        fusion = os.path.join(tmp, "fused_app")
+        os.makedirs(fusion)
+        failed = {"status": "failed"}
+        # no glue at all: never heal (e.g. probe/synthesis failure)
+        res = heal_mod.auto_heal(tmp, failed, env={})
+        self.assertEqual(res["status"], "not_attempted", res)
+        self.assertIn("no generated glue", res["reason"])
+        # glue present but unattested: never heal unreviewed code
+        gen = os.path.join(fusion, "generated")
+        os.makedirs(gen)
+        open(os.path.join(gen, "app.py"), "w").write("X = 1\n")
+        open(os.path.join(fusion, "test_fused.py"), "w").write("pass\n")
+        res = heal_mod.auto_heal(tmp, failed, env={})
+        self.assertEqual(res["status"], "not_attempted", res)
+        self.assertIn("not review-attested", res["reason"])
 
     def test_same_invocation_attestation_refused(self):
         import argparse

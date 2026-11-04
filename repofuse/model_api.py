@@ -130,11 +130,14 @@ def chat_completion(messages, model=DEFAULT_MODEL, max_tokens=4096,
     latency_ms = int((time.monotonic() - started) * 1000)
     choices = body.get("choices") or []
     content = ""
+    finish_reason = None
     if choices:
         content = (choices[0].get("message") or {}).get("content") or ""
+        finish_reason = choices[0].get("finish_reason")
     return {
         "content": content,
         "model": body.get("model", model),
         "usage": body.get("usage") or {},
         "latency_ms": latency_ms,
+        "finish_reason": finish_reason,
     }

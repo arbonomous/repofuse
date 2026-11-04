@@ -46,12 +46,37 @@ def _budget_repo_view(r):
     }
 
 
+# On 2026-11-04 an unbounded arch schema (full source_exports lists)
+# produced a truncated 4,096-token response, wasting a paid call. These
+# limits only REDUCE visible schema size; they do NOT guarantee fit:
+# provider telemetry for that call showed 3,423 of 4,096 completion tokens
+# were reasoning tokens, which no visible-schema limit can bound. The
+# actual guards are finish_reason truncation detection, raw retention,
+# and post-parse size validation - never the sizes below.
+ARCH_MAX_EXPORTS_PER_REPO = 12
+ARCH_MAX_BRIDGE = 8
+ARCH_MAX_SHIMS = 8
+ARCH_MAX_RISKS = 6
+ARCH_MAX_STR = 160
+ARCH_OUTPUT_CHAR_BUDGET = 6000
+
+
 def build_architecture_prompt(manifest, metas):
     repos = [{"slug": m["slug"],
-              "readme_excerpt": (m.get("readme_excerpt") or "")[:1500],
-              "tree_sample": (m.get("tree") or [])[:60]} for m in metas]
+              "readme_excerpt": (m.get("readme_excerpt") or "")[:800],
+              "tree_sample": (m.get("tree") or [])[:40]} for m in metas]
     user = {
-        "task": "Produce the architecture bridge manifest as strict JSON.",
+        "task": "Produce the architecture bridge manifest as strict JSON, "
+                "terse.",
+        "output_budget": (
+            f"The ENTIRE response must be one valid JSON object under "
+            f"{ARCH_OUTPUT_CHAR_BUDGET} characters. Hard limits: "
+            f"<={ARCH_MAX_EXPORTS_PER_REPO} source_exports per repo (short "
+            f"names, only the most relevant), <={ARCH_MAX_BRIDGE} bridge "
+            f"entries, <={ARCH_MAX_SHIMS} required_shims, "
+            f"<={ARCH_MAX_RISKS} risks, every string "
+            f"<={ARCH_MAX_STR} chars, arbitrage_opportunity <=400 chars. "
+            "No prose, markdown or code fences outside the JSON."),
         "schema": {
             "source_exports": {r["slug"]: "list[str]" for r in manifest["repos"]},
             "arbitrage_opportunity": "str",
@@ -67,6 +92,29 @@ def build_architecture_prompt(manifest, metas):
     }
     return [{"role": "developer", "content": _system_prompt()},
             {"role": "user", "content": json.dumps(user, indent=2)}]
+
+
+def validate_architecture_size(arch):
+    """Reject a parsed architecture manifest that ignored the output
+    budget: bloat here inflates the glue prompt input. Raises
+    BudgetExceeded with the violated limit."""
+    for repo, exports in (arch.get("source_exports") or {}).items():
+        if isinstance(exports, list) and len(exports) > ARCH_MAX_EXPORTS_PER_REPO:
+            raise BudgetExceeded(
+                f"architecture source_exports[{repo}] = {len(exports)} > "
+                f"{ARCH_MAX_EXPORTS_PER_REPO}")
+    for key, cap in (("bridge", ARCH_MAX_BRIDGE),
+                     ("required_shims", ARCH_MAX_SHIMS),
+                     ("risks", ARCH_MAX_RISKS)):
+        val = arch.get(key)
+        if isinstance(val, list) and len(val) > cap:
+            raise BudgetExceeded(f"architecture {key} = {len(val)} > {cap}")
+    blob = json.dumps(arch)
+    if len(blob) > ARCH_OUTPUT_CHAR_BUDGET:
+        raise BudgetExceeded(
+            f"architecture JSON {len(blob)} chars > budget "
+            f"{ARCH_OUTPUT_CHAR_BUDGET}")
+    return True
 
 
 def build_glue_prompt(manifest, architecture):
@@ -168,15 +216,46 @@ def _write_files(fusion_dir, files, model, ts, slot="glue"):
     return written
 
 
+class TruncatedOutput(RuntimeError):
+    """The charged response hit the provider max_tokens cap: content is
+    incomplete. Usage was real and is committed; the raw bytes are
+    retained under raw_responses/ before this is raised."""
+
+
+def _retain_raw_response(out_dir, step, resp):
+    """Durably retain the paid response BEFORE any parsing, so a parse or
+    truncation failure never destroys output the user paid for. Step names
+    are fixed code constants, never model-derived."""
+    raw_dir = os.path.join(out_dir, "raw_responses")
+    os.makedirs(raw_dir, exist_ok=True)
+    payload = {"step": step, "model": resp.get("model"),
+               "usage": resp.get("usage"),
+               "finish_reason": resp.get("finish_reason"),
+               "latency_ms": resp.get("latency_ms"),
+               "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "content": resp.get("content") or ""}
+    tmp = os.path.join(raw_dir, step + ".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, os.path.join(raw_dir, step + ".json"))
+
+
 def call_gated(step, messages, out_dir, budget, env=None,
                max_tokens=RUN_ENVELOPE["max_output_tokens"]):
     """Unified gated call: measure -> reserve -> call -> commit.
+
+    The count preflight is an INDEPENDENT refusal gate (refuse when the
+    endpoint is unavailable or its count exceeds the per-call cap) and a
+    reservation basis; no universal relationship between the count and
+    billed usage is claimed. Actual billed usage is committed from the
+    response itself; any committed-usage cap breach aborts the run.
 
     Raises BudgetExceeded / ModelCallError / ModelUnavailable.
     """
     total_chars = sum(len(m["content"]) for m in messages)
     if total_chars > MAX_CONTEXT_CHARS:
         raise BudgetExceeded(f"{step}: {total_chars} chars exceeds bound")
+    budget.record_count(step)  # durable checkpoint BEFORE the count request
     measured = model_api.count_tokens(messages, env=env)
     if measured is None:
         raise BudgetExceeded(f"{step}: count_tokens unavailable; refusing "
@@ -188,30 +267,50 @@ def call_gated(step, messages, out_dir, budget, env=None,
     telemetry.log_call(os.path.join(out_dir, "telemetry.jsonl"), step=step,
                        model=resp["model"], usage=resp["usage"],
                        latency_ms=resp["latency_ms"], status="ok")
+    _retain_raw_response(out_dir, step, resp)
+    if resp.get("finish_reason") == "length":
+        raise TruncatedOutput(
+            f"{step}: response hit the max_tokens cap; raw content retained "
+            f"under raw_responses/{step}.json, usage committed, NO retry "
+            "permitted (step is reserved)")
+    env_cap = RUN_ENVELOPE
+    st = budget.state
+    if (st["actual_input"] > env_cap["max_total_input_tokens"]
+            or st["actual_output"] > env_cap["max_total_output_tokens"]):
+        raise BudgetExceeded(
+            f"{step}: committed usage breached aggregate cap "
+            f"(in={st['actual_input']}, out={st['actual_output']}); "
+            "run aborted, no further calls")
     return resp, actual
 
 
 def run_probe(out_dir, budget, env=None):
-    """1-token probe: validates count_tokens against real usage before spend."""
+    """1-token probe on DOCUMENTED semantics only: validates auth, that the
+    count endpoint responds (it is used later as an independent preflight
+    gate), and that the charged response reports integer
+    usage.prompt_tokens (required for all post-hoc accounting). No numeric
+    relationship between the count result and billed usage is asserted:
+    official docs contradict each other on whether injected steering tokens
+    are included in counts, and two probe samples cannot prove any
+    universal relationship. Probe failure aborts the run and must never
+    trigger heal."""
     msgs = [{"role": "user", "content": "Reply with the word: ready"}]
+    budget.record_count("probe")  # durable checkpoint BEFORE the count request
     measured = model_api.count_tokens(msgs, env=env)
     if measured is None:
         return {"status": "failed",
                 "detail": "count_tokens unavailable at probe; run refused"}
     budget.reserve("probe", measured, 1)
     resp = model_api.chat_completion(msgs, max_tokens=1, timeout=60, env=env)
+    prompt_tokens = (resp.get("usage") or {}).get("prompt_tokens")
+    if not isinstance(prompt_tokens, int):
+        return {"status": "failed",
+                "detail": "probe response lacks usage.prompt_tokens; run refused"}
     actual = budget.commit("probe", resp["usage"])
     telemetry.log_call(os.path.join(out_dir, "telemetry.jsonl"), step="probe",
                        model=resp["model"], usage=resp["usage"],
                        latency_ms=resp["latency_ms"], status="ok")
-    prompt_tokens = (resp["usage"] or {}).get("prompt_tokens")
-    if not isinstance(prompt_tokens, int):
-        return {"status": "failed",
-                "detail": "probe response lacks usage.prompt_tokens; run refused"}
-    if abs(prompt_tokens - measured) > max(4, measured // 4):
-        return {"status": "failed",
-                "detail": f"count_tokens ({measured}) disagrees with probe "
-                          f"usage ({prompt_tokens}); run refused"}
+    _retain_raw_response(out_dir, "probe", resp)
     return {"status": "ok", "measured": measured, "actual": actual}
 
 
@@ -250,6 +349,7 @@ def run_synthesis(manifest, metas, out_dir, env=None):
         arch_resp, _ = call_gated("architecture-manifest", arch_msgs,
                                   out_dir, budget, env=env)
         architecture = _extract_json(arch_resp["content"])
+        validate_architecture_size(architecture)
         with open(os.path.join(out_dir, "architecture.json"), "w",
                   encoding="utf-8") as f:
             json.dump(architecture, f, indent=2)
@@ -277,6 +377,10 @@ def run_synthesis(manifest, metas, out_dir, env=None):
                                slot="test")
         result["files_written"].extend(written)
         result["steps"]["test-synthesis"] = "done"
+    except TruncatedOutput as e:
+        # terminal: raw response retained, usage committed, step burned
+        result["status"] = "failed_truncated"
+        result["detail"] = str(e)
     except (BudgetExceeded, model_api.ModelUnavailable,
             model_api.ModelCallError, ValueError, KeyError, OSError) as e:
         result["status"] = "failed"

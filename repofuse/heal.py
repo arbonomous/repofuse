@@ -20,6 +20,18 @@ def auto_heal(out_dir, first_result, env=None, attestation_path=None):
     if first_result.get("status") != "failed":
         return {"status": "not_attempted",
                 "reason": f"verify status {first_result.get('status')}"}
+    # Heal exists to fix BEHAVIORAL failures of actual generated code.
+    # It must never fire when no reviewed glue exists (e.g. a synthesis
+    # or probe failure), and never on unreviewed glue.
+    from . import gluereview
+    if not gluereview.generated_targets(fusion_dir):
+        return {"status": "not_attempted",
+                "reason": "no generated glue exists; heal only fixes real "
+                          "generated code, never a synthesis/probe failure"}
+    ok, why, _ = gluereview.check_attestation(fusion_dir, attestation_path)
+    if not ok:
+        return {"status": "not_attempted",
+                "reason": f"glue not review-attested; refusing heal: {why}"}
     if not model_api.have_model_key(env):
         return {"status": "pending_no_key",
                 "reason": "verify failed but no MODEL_API_KEY for heal"}

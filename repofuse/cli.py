@@ -127,7 +127,11 @@ def cmd_run(args):
             attestation_path=attestation)
         if verification["vacuity_control"]["status"] == "vacuous_tests":
             verification["status"] = "rejected_vacuous"
-    heal = heal_mod.auto_heal(out, verification, attestation_path=attestation)
+    heal = (heal_mod.auto_heal(out, verification, attestation_path=attestation)
+            if synthesis.get("status") == "completed"
+            else {"status": "not_attempted",
+                  "reason": "synthesis not completed; heal only fixes real "
+                            "generated code"})
     if heal.get("second_verify"):
         verification = heal["second_verify"]
         verification["healed"] = True
@@ -204,7 +208,11 @@ def cmd_qualify(args):
     ingest_mod.save_json(supplementary, os.path.join(out, "verification.json"))
     print(f"model-test (supplementary): {supplementary['status']}")
 
-    heal = heal_mod.auto_heal(out, acceptance, attestation_path=attestation)
+    heal = (heal_mod.auto_heal(out, acceptance, attestation_path=attestation)
+            if synthesis.get("status") == "completed"
+            else {"status": "not_attempted",
+                  "reason": "synthesis not completed; heal only fixes real "
+                            "generated code"})
     ingest_mod.save_json(heal, os.path.join(out, "heal.json"))
     pkg = package_mod.package_fused_app(out)
     report_mod.build_report(out, metas, manifest, synthesis, acceptance)

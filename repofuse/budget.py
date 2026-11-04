@@ -13,7 +13,16 @@ import os
 import time
 
 RUN_ENVELOPE = {
-    "max_calls": 5,          # probe + architecture + glue + test + 1 heal
+    # Original approved run: 5 charged + 5 count (2026-11-03, user grant).
+    # The incident run consumed 3 charged (2 committed probes + 1
+    # interrupted auto-heal reservation, unknown disposition) + 3 count.
+    # 6/6 below is main's PROPOSED minimum top-up (+1/+1, remaining
+    # capacity arch/glue/test, NO heal) - it is source-coherent only and
+    # NOT active authority: the run stays held until the user grants it.
+    "max_calls": 6,
+    # provider count_tokens checks, tracked durably like charged calls.
+    # Set from the approved envelope (was 5; incident consumed 3).
+    "max_count_calls": 6,
     "max_input_tokens": 12000,    # per call, provider-measured preflight
     "max_output_tokens": 4096,    # per call, provider-enforced max_tokens
     "max_total_input_tokens": 60000,
@@ -45,6 +54,14 @@ class Budget:
     def reserve(self, step, input_tokens, output_tokens):
         """Reserve before a charged call; raises BudgetExceeded."""
         env = RUN_ENVELOPE
+        # No-retries guard: one reservation per named step, EVER. An
+        # interrupted reservation (actual=None) is consumed, not reusable,
+        # so a re-run of an interrupted stage refuses instead of refiring
+        # (closes the incident's duplicate-probe failure mode structurally).
+        if any(c["step"] == step for c in self.state["calls"]):
+            raise BudgetExceeded(
+                f"step {step!r} already reserved; no retries - an "
+                "interrupted reservation is consumed, not reusable")
         if len(self.state["calls"]) >= env["max_calls"]:
             raise BudgetExceeded(f"call count cap {env['max_calls']}")
         if input_tokens > env["max_input_tokens"]:
@@ -64,6 +81,29 @@ class Budget:
         })
         self.state["reserved_input"] += input_tokens
         self.state["reserved_output"] += output_tokens
+        self._save()
+
+    def record_count(self, step):
+        """Durably record a provider count_tokens check BEFORE it fires,
+        so the count-check half of the approved envelope is enforced by
+        the same durable accounting as charged calls (previously untracked)."""
+        env = RUN_ENVELOPE
+        counts = self.state.setdefault("count_calls", [])
+        # Same one-per-step guard as reserve(), applied BEFORE the count
+        # endpoint fires: without it, re-running an interrupted stage would
+        # still send a real count_tokens request (breaching no-retries on
+        # the count endpoint) before the charged-side guard could stop it.
+        if any(c["step"] == step for c in counts):
+            raise BudgetExceeded(
+                f"count check for step {step!r} already recorded; no "
+                "retries - an interrupted stage refuses BEFORE the count "
+                "endpoint fires")
+        if len(counts) >= env["max_count_calls"]:
+            raise BudgetExceeded(
+                f"count-check cap {env['max_count_calls']}")
+        counts.append({"step": step,
+                       "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                           time.gmtime())})
         self._save()
 
     def commit(self, step, usage):
