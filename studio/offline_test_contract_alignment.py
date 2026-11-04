@@ -8,6 +8,13 @@ enforces is either expressed in the schema (so structured output can
 constrain it) or documented here as an intentional prompt-enforced gap
 with the validator proven fail-closed on it. Retained REAL responses are
 regression inputs. No network, no key, no calls.
+
+Attempt 3 (run-1f58ac57911bb892) added a second failure class: the
+charged tests step succeeded, but the generated test_fused.py used
+requests-style json= kwargs and un-awaited calls against the pinned
+ASYNC microdot TestClient API. The tests-step prompt now states the
+exact API; the checks below pin the prompt wording, the vendored API
+shape, and the retained failing test as regression evidence.
 """
 import json
 import os
@@ -295,6 +302,119 @@ def t_ideas_schema_matches_card_validator():
 check("ideas: schema constraints == card validator bounds (behavioral)",
       t_ideas_schema_matches_card_validator)
 
+
+# ---------- tests step: pinned TestClient contract (attempt-3 fix) ----------
+
+VENDORED_TEST_CLIENT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "examples", "notes-app-fusion", "fused_app", "vendor", "microdot",
+    "src", "microdot", "test_client.py")
+# Verbatim retained copy of the attempt-3 GENERATED test that failed
+# (historical evidence; the original in studio/runs/ is never modified).
+ATTEMPT3_FAILING_TEST = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "testdata", "test-fused-attempt3-failing.py")
+
+
+def _tests_prompt():
+    return build_ai._messages("build-tests",
+                              {"title": "t", "what": "w", "fit": []},
+                              [], {})[1]["content"]
+
+
+def _testclient_misuse(src):
+    """Static scan of generated-test source for the two attempt-3 failure
+    modes against the pinned async TestClient API: requests-style json=
+    kwargs, and un-awaited request-helper calls on the client. Offline
+    gate only - the paid pipeline validators are unchanged."""
+    import ast
+    tree = ast.parse(src)
+    problems = []
+    helpers = ("get", "post", "put", "patch", "delete")
+
+    class Kw(ast.NodeVisitor):
+        def visit_Call(self, node):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr in helpers:
+                for kw in node.keywords:
+                    if kw.arg == "json":
+                        problems.append(
+                            f"line {node.lineno}: requests-style json= "
+                            f"kwarg on .{f.attr}()")
+            self.generic_visit(node)
+
+    class Aw(ast.NodeVisitor):
+        def __init__(self):
+            self.awaited = set()
+
+        def visit_Await(self, node):
+            self.awaited.add(id(node.value))
+            self.generic_visit(node)
+
+    Kw().visit(tree)
+    aw = Aw()
+    aw.visit(tree)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in helpers
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("client", "c")
+                and id(node) not in aw.awaited):
+            problems.append(
+                f"line {node.lineno}: un-awaited .{node.func.attr}() "
+                "request-helper call")
+    return problems
+
+
+def t_tests_prompt_states_exact_testclient_contract():
+    p = _tests_prompt()
+    for needle in ("body=payload", "await client.get", "asyncio.run",
+                   "NO json=", ".status_code"):
+        assert needle in p, needle
+check("tests: prompt states the exact pinned TestClient contract "
+      "(attempt-3 fix)", t_tests_prompt_states_exact_testclient_contract)
+
+
+def t_vendored_testclient_matches_stated_contract():
+    src = open(VENDORED_TEST_CLIENT).read()
+    assert "async def post(self, path, headers=None, body=None)" in src
+    assert "async def put(self, path, headers=None, body=None)" in src
+    assert "async def get(self, path, headers=None)" in src
+    assert "async def delete(self, path, headers=None)" in src
+    for line in src.splitlines():
+        if line.strip().startswith("async def"):
+            assert "json" not in line, line
+check("tests: vendored pinned TestClient API matches the stated contract",
+      t_vendored_testclient_matches_stated_contract)
+
+
+def t_attempt3_failing_test_flagged():
+    if not os.path.exists(ATTEMPT3_FAILING_TEST):
+        print("    (skip: attempt-3 failing-test fixture not present)")
+        return
+    problems = _testclient_misuse(open(ATTEMPT3_FAILING_TEST).read())
+    assert any("json=" in p for p in problems), problems
+    assert any("un-awaited" in p for p in problems), problems
+check("regression: attempt-3 failing generated test is flagged "
+      "(json= + un-awaited)", t_attempt3_failing_test_flagged)
+
+
+def t_contract_correct_test_pattern_clean():
+    corrected = (
+        "import vendor\n"
+        "import asyncio\n"
+        "import generated.app as gen_app\n"
+        "from microdot.test_client import TestClient\n"
+        "client = TestClient(gen_app.app)\n"
+        "async def make():\n"
+        "    r = await client.post(\'/notes\', body={\'text\': \'x\'})\n"
+        "    assert r.status_code == 201\n"
+        "    assert isinstance(r.json, dict)\n"
+        "asyncio.run(make())\n")
+    assert _testclient_misuse(corrected) == []
+check("counterfactual: contract-correct pattern passes the misuse scan",
+      t_contract_correct_test_pattern_clean)
 
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {len(FAIL)} failed")

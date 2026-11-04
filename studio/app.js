@@ -225,6 +225,7 @@
   }
 
   let lastIdeas = null;
+  let buildInputDesc = null;  // truthful provenance of the build input card
   function pickIdea(card, recordedPair) {
     log(`You picked: <span class="hl">${card.title}</span>`);
     if (recordedPair && card.id === "notes-crud") {
@@ -257,6 +258,10 @@
 
   function startBuild(card) {
     if (!lastRunId) return;
+    const li = lastIdeas || {};
+    buildInputDesc = (li.source && li.source.indexOf("model:") === 0)
+      ? "the AI-suggested idea you picked"
+      : "a locally-generated analysis card you picked (no model call produced it)";
     setStage("architecture", "running");
     log(`Building <span class="hl">${card.title}</span> - the repos get re-pinned at the exact commits from this run; each model stage is honestly gated.`);
     fetch("/api/build", {
@@ -549,9 +554,15 @@
     $("#verdict-journey").innerHTML = `
       <div class="journey-card"><span class="j-badge pass">VERIFIED</span>
         <h3>${d.app_name}</h3>
-        <p>Freshly generated from your selected idea and verified against its
-        unedited output. The app below IS this build - spawned and
-        probe-verified just now, not the recorded example.</p></div>`;
+        <p>Freshly generated from ${buildInputDesc || "the input card selected for this run"}
+        and verified against its unedited output. The app below IS this
+        build - spawned and probe-verified just now, not the recorded
+        example.</p><p id="model-tests-note"></p></div>`;
+    const mtNote = $("#model-tests-note");
+    if (d.model_tests === "passed")
+      mtNote.textContent = "The model's own test script also passed (supporting signal; the fixed acceptance is the bar).";
+    else if (d.model_tests)
+      mtNote.textContent = `Honesty note: the model's own test script ${d.model_tests}; the pass above is the fixed, model-independent CRUD acceptance.`;
     show("#screen-result");
     appBase = `/build/${runId}${d.prefix}`; appField = d.field;
     appEntity = d.entity || "item";

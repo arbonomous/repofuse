@@ -443,7 +443,19 @@ def _messages(step, card, repos, extra=None):
                      "(the vendored shim puts microdot and peewee on "
                      "sys.path); only AFTER that import microdot, peewee "
                      "and generated.app. No network, no "
-                     "subprocess, no os module.",
+                     "subprocess, no os module. Exact pinned TestClient "
+                     "API (microdot 2.7.0): the request helpers are ASYNC "
+                     "- await client.get(path), await client.post(path, "
+                     "body=payload), await client.put(path, body=payload), "
+                     "await client.delete(path) - so define async check "
+                     "functions and drive them from sync code with "
+                     "asyncio.run(...). Pass a JSON payload with the body "
+                     "keyword as a dict or list (auto JSON-encoded with "
+                     "content-type application/json). There is NO json= "
+                     "keyword: never write requests-style calls such as "
+                     "client.post(path, json=payload). Read results from "
+                     "the response's .status_code (int), .json (decoded "
+                     "dict/list or None) and .text (str or None).",
              "idea": card, "plan": extra, "repos": repos}, indent=1)
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
