@@ -117,8 +117,8 @@ The demonstrated upstream repositories retain their BSD-3-Clause notices.
 License detection is heuristic; inspect actual notices and redistribution
 conditions before releasing a fused result. Dependencies retain their own
 licenses. Do not remove upstream notices or attribute assistant repairs to the
-Meta model. The repository's own license choice is pending owner approval;
-no new root license is implied by this README.
+Meta model. Original RepoFuse code and documentation are licensed under the MIT License
+in `LICENSE`. Third-party code and materials remain under their own licenses.
 
 Public repository release, hosted demo/video publication and hackathon
 submission are separate owner decisions. This source does not authorize them.
