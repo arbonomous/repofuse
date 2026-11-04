@@ -121,7 +121,12 @@ def _load_pipeline():
     return ingest_mod, analyze_mod, safety_mod
 
 
-def _vendor_stage(run, run_id, metas):
+def _key_stripped_env():
+    return {k: v for k, v in os.environ.items()
+            if k not in ("MODEL_API_KEY", "META_API_KEY")}
+
+
+def _vendor_stage(run, run_id, metas, intent=None):
     """FREE selected-code connection: the fused app tree is built from
     THIS run's pinned clones (plan manifest + acceptance criteria +
     vendored code + import shim), exactly the CLI's pre-synthesis
@@ -147,9 +152,14 @@ def _vendor_stage(run, run_id, metas):
         manifest["acceptance_criteria"] = criteria
         vendor_manifest = vendor_mod.vendor_repos(vmetas, fusion_dir)
         vendor_mod.write_import_shim(fusion_dir)
+        metas_lite = [{"slug": m["slug"], "url": m["url"],
+                       "commit_sha": m["commit_sha"],
+                       "readme_excerpt": m.get("readme_excerpt"),
+                       "tree": m.get("tree")} for m in vmetas]
         for name, doc in (("fuse_manifest.json", manifest),
                           ("acceptance.json", criteria),
-                          ("vendor_manifest.json", vendor_manifest)):
+                          ("vendor_manifest.json", vendor_manifest),
+                          ("metas.json", metas_lite)):
             with open(os.path.join(fusion_root, name), "w",
                       encoding="utf-8") as f:
                 json.dump(doc, f, indent=2, sort_keys=True)
@@ -179,16 +189,35 @@ def _vendor_stage(run, run_id, metas):
          "Execution requires the independent byte-review attestation "
          "(symlinks fail it) and, on a warn verdict, the reviewer "
          "acknowledgment.")
+    # Genuine core free preparation: run_synthesis with a key-stripped
+    # environment. It writes the real prompt bundle (prompts/) and
+    # STOPS at pending_no_key - structurally unable to spend, whatever
+    # the ambient environment holds. The user's intent steers the
+    # prepared prompts as bounded data.
     try:
-        msgs = synth_mod.build_architecture_prompt(manifest, vmetas)
-        plen = sum(len(m.get("content", "")) for m in msgs)
-        emit(run, "vendor", "log",
-             f"Architecture-synthesis prompt PREPARED ({plen} chars) - "
-             "NOT sent: no model grant, no key. This is a dry run, not "
-             "a generated app.")
+        prep = synth_mod.run_synthesis(manifest, vmetas, fusion_root,
+                                       env=_key_stripped_env(),
+                                       intent=intent)
     except Exception as e:
         emit(run, "vendor", "log",
-             f"prompt preparation skipped honestly: {e}")
+             f"prompt-bundle preparation failed honestly: {e}")
+        prep = None
+    if prep and prep.get("status") == "pending_no_key":
+        for name in prep.get("prompts_written", []):
+            ppath = os.path.join(fusion_root, "prompts", name + ".json")
+            try:
+                plen = os.path.getsize(ppath)
+            except OSError:
+                plen = 0
+            emit(run, "vendor", "log",
+                 f"Synthesis prompt PREPARED ({name}, {plen} bytes) - "
+                 "NOT sent: no model grant, no key presented. This is "
+                 "the real core prompt bundle for THIS vendor tree, a "
+                 "dry run, not a generated app.")
+    elif prep:
+        emit(run, "vendor", "log",
+             "prompt-bundle preparation returned an unexpected state "
+             f"honestly: {prep.get('status')} - {prep.get('detail')}")
     with _lock:
         run["vendor"] = {"files": nfiles,
                          "truncated": vendor_manifest["truncated"],
@@ -200,6 +229,67 @@ def _vendor_stage(run, run_id, metas):
          f"Selected code vendored ({nfiles} files, inert, review-gated).",
          {"files": nfiles, "truncated": vendor_manifest["truncated"]})
     return True
+
+
+def _card_intent(card):
+    parts = [str(card.get("title") or "").strip(),
+             str(card.get("what") or "").strip()]
+    fit = card.get("fit")
+    if isinstance(fit, list):
+        parts.append("why these repos: " + ", ".join(map(str, fit)))
+    elif fit:
+        parts.append("why these repos: " + str(fit))
+    return ". ".join(p.rstrip(".") for p in parts if p)
+
+
+def prepare_bundle_for_idea(run_id, card):
+    """FREE: the idea the user picked steers the REAL core prompt bundle
+    for THIS run's chosen vendor tree. run_synthesis runs with a
+    key-stripped environment, so it can only write prompts and stop at
+    pending_no_key - no count call, no provider contact, no spend is
+    structurally possible here. Returns (ok, lines)."""
+    with _lock:
+        run = _runs.get(run_id)
+    if not run:
+        return False, ["unknown run"]
+    fusion_root = os.path.join(RUNS, f"{run_id}-fusion")
+    manifest_path = os.path.join(fusion_root, "fuse_manifest.json")
+    metas_path = os.path.join(fusion_root, "metas.json")
+    if not (os.path.isfile(manifest_path) and os.path.isfile(metas_path)):
+        return False, ["no vendored fusion dir for this run; the free "
+                       "fuse stages did not complete"]
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        with open(metas_path, encoding="utf-8") as f:
+            metas = json.load(f)
+        from repofuse import synthesize as synth_mod          # noqa: PLC0415
+    except Exception as e:
+        return False, [f"bundle preparation unavailable honestly: {e}"]
+    intent = _card_intent(card)
+    if not intent:
+        return False, ["the picked idea carries no text to steer with"]
+    try:
+        prep = synth_mod.run_synthesis(manifest, metas, fusion_root,
+                                       env=_key_stripped_env(),
+                                       intent=intent)
+    except Exception as e:
+        return False, [f"bundle preparation failed honestly: {e}"]
+    if prep.get("status") != "pending_no_key":
+        return False, ["bundle preparation returned an unexpected state "
+                       f"honestly: {prep.get('status')} - "
+                       f"{prep.get('detail')}"]
+    lines = [
+        f"Idea picked: {card.get('title')}. It now steers the REAL core "
+        "prompt bundle for this run's vendored repos.",
+        "Synthesis prompt PREPARED with your idea as user_intent "
+        f"({len(intent)} chars, bounded) - NOT sent: no model grant, no "
+        "key presented. Still a dry run: nothing generated, nothing "
+        "executed.",
+    ]
+    for line in lines:
+        emit(run, "vendor", "log", line)
+    return True, lines
 
 
 def run_pipeline(run_id, repo_a, repo_b, intent):
@@ -318,7 +408,7 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
              "Safety qualification complete: "
              f"{run_verdict['status'].upper()}.")
 
-        if not _vendor_stage(run, run_id, metas):
+        if not _vendor_stage(run, run_id, metas, intent=intent):
             with _lock:
                 run["status"] = "failed"
             return
@@ -1295,6 +1385,28 @@ class Handler(BaseHTTPRequestHandler):
                          daemon=True).start()
         return self._json(200, {"run_id": run_id, "status": "running"})
 
+    def _prepare_bundle(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_FUSE_BODY:
+            return self._json(413, {"error": "body too large"})
+        try:
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return self._json(400, {"error": "bad JSON"})
+        run_id = req.get("run_id") or ""
+        card = req.get("card")
+        if not RUN_ID.match(run_id):
+            return self._json(400, {"error": "unknown run"})
+        if not (isinstance(card, dict)
+                and isinstance(card.get("title"), str)):
+            return self._json(400,
+                              {"error": "a selected idea card is required"})
+        ok, lines = prepare_bundle_for_idea(run_id, card)
+        if not ok:
+            return self._json(409, {"error": lines[0]})
+        return self._json(200, {"status": "prepared_not_sent",
+                                "lines": lines})
+
     def _build_resume(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_FUSE_BODY:
@@ -1323,6 +1435,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/fuse":
             return self._fuse()
+        if path == "/api/prepare-bundle":
+            return self._prepare_bundle()
         if path == "/api/build":
             return self._build()
         if path == "/api/build/resume":

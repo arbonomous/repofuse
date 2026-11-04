@@ -115,3 +115,54 @@ def test_slug_collision_fails_honestly(tmp_path, monkeypatch):
     assert not serve._vendor_stage(run, run["run_id"], metas)
     errs = [e for e in run["events"] if e["kind"] == "error"]
     assert errs and "vendoring failed honestly" in errs[0]["text"]
+
+
+def _prepare_fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr(serve, "RUNS", str(tmp_path / "runs"))
+    run = _run()
+    assert serve._vendor_stage(run, run["run_id"], _metas(tmp_path))
+    serve._runs[run["run_id"]] = run
+    return run
+
+
+def test_prepare_bundle_for_picked_idea(tmp_path, monkeypatch):
+    run = _prepare_fixture(tmp_path, monkeypatch)
+    card = {"title": "Signing playground",
+            "what": "Sign and verify payloads in a tiny UI",
+            "fit": ["BadData", "Markup"]}
+    ok, lines = serve.prepare_bundle_for_idea(run["run_id"], card)
+    assert ok, lines
+    bundle = json.loads(
+        (tmp_path / "runs" / f"{run['run_id']}-fusion" / "prompts"
+         / "architecture-manifest.json").read_text())
+    payload = json.loads(bundle[1]["content"])
+    assert "Signing playground" in payload["user_intent"]
+    assert "Sign and verify payloads" in payload["user_intent"]
+    assert "BadData" in payload["user_intent"]
+    # dry run only: no generated files, no provider artifacts
+    fusion = tmp_path / "runs" / f"{run['run_id']}-fusion" / "fused_app"
+    assert not (fusion / "generated").exists()
+    assert not (tmp_path / "runs" / f"{run['run_id']}-fusion"
+                / "raw_responses").exists()
+    # the run's event stream carries the honest lines
+    texts = " ".join(e["text"] for e in run["events"])
+    assert "NOT sent" in texts and "dry run" in texts
+
+
+def test_prepare_bundle_unknown_run_and_missing_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(serve, "RUNS", str(tmp_path / "runs"))
+    ok, _ = serve.prepare_bundle_for_idea("run-00000000",
+                                          {"title": "x"})
+    assert not ok
+    run = _run()
+    serve._runs[run["run_id"]] = run
+    ok, lines = serve.prepare_bundle_for_idea(run["run_id"],
+                                              {"title": "x"})
+    assert not ok and "no vendored fusion dir" in lines[0]
+
+
+def test_prepare_bundle_empty_card_refused(tmp_path, monkeypatch):
+    run = _prepare_fixture(tmp_path, monkeypatch)
+    ok, lines = serve.prepare_bundle_for_idea(
+        run["run_id"], {"title": " ", "what": ""})
+    assert not ok and "no text to steer" in lines[0]

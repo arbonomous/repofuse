@@ -125,7 +125,16 @@ def _rf_json_schema(name, schema):
             "json_schema": {"name": name, "schema": schema}}
 
 
-def build_architecture_prompt(manifest, metas):
+MAX_INTENT_CHARS = 500
+
+
+def _bounded_intent(intent):
+    """The user's chosen idea/intent, bounded and carried as DATA. It
+    steers the prompts; it is never executed and never grants anything."""
+    return (intent or "").strip()[:MAX_INTENT_CHARS]
+
+
+def build_architecture_prompt(manifest, metas, intent=None):
     repos = [{"slug": m["slug"],
               "readme_excerpt": (m.get("readme_excerpt") or "")[:800],
               "tree_sample": (m.get("tree") or [])[:40]} for m in metas]
@@ -153,6 +162,7 @@ def build_architecture_prompt(manifest, metas):
         "boundary_candidates": manifest["boundary_candidates"],
         "conflicts": manifest["conflicts"],
         "repo_context": repos,
+        "user_intent": _bounded_intent(intent),
     }
     return [{"role": "developer", "content": _system_prompt()},
             {"role": "user", "content": json.dumps(user, indent=2)}]
@@ -204,7 +214,7 @@ def validate_architecture_size(arch):
     return True
 
 
-def build_glue_prompt(manifest, architecture):
+def build_glue_prompt(manifest, architecture, intent=None):
     user = {
         "task": "Write the adapter shim code connecting the repos per the "
                 "architecture manifest. Return a JSON object mapping snake_case "
@@ -216,12 +226,13 @@ def build_glue_prompt(manifest, architecture):
         "conflicts": manifest["conflicts"],
         "acceptance_criteria": manifest.get("acceptance_criteria", []),
         "fixed_contract": manifest.get("qualification_contract"),
+        "user_intent": _bounded_intent(intent),
     }
     return [{"role": "developer", "content": _system_prompt()},
             {"role": "user", "content": json.dumps(user, indent=2)}]
 
 
-def build_test_prompt(manifest, architecture, glue_contents):
+def build_test_prompt(manifest, architecture, glue_contents, intent=None):
     """glue_contents: actual generated glue source (bounded), not just names."""
     user = {
         "task": "Write an integration test file (test_fused.py, stdlib "
@@ -232,6 +243,7 @@ def build_test_prompt(manifest, architecture, glue_contents):
                 "the glue source below.",
         "architecture": architecture,
         "glue_source": {k: v[:20000] for k, v in glue_contents.items()},
+        "user_intent": _bounded_intent(intent),
         "acceptance_criteria": manifest.get("acceptance_criteria", []),
     }
     return [{"role": "developer", "content": _system_prompt()},
@@ -410,16 +422,25 @@ def run_probe(out_dir, budget, env=None):
     return {"status": "ok", "measured": measured, "actual": actual}
 
 
-def run_synthesis(manifest, metas, out_dir, env=None):
-    """Run the gated synthesis sequence. Returns a status dict; never fakes."""
+def run_synthesis(manifest, metas, out_dir, env=None, intent=None,
+                  envelope_path=None):
+    """Run the gated synthesis sequence. Returns a status dict; never fakes.
+
+    intent: the user's chosen idea/intent, carried as bounded data into
+    every prompt (steering only). envelope_path: a run-local envelope
+    file (fail-closed if missing/malformed) tightening this run's
+    bounds below the RUN_ENVELOPE ceiling - e.g. exactly the calls the
+    granted plan names, so no latent heal/retry headroom exists."""
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     fusion_dir = os.path.join(out_dir, "fused_app")
     prompts_dir = os.path.join(out_dir, "prompts")
     os.makedirs(fusion_dir, exist_ok=True)
     os.makedirs(prompts_dir, exist_ok=True)
-    budget = Budget(os.path.join(out_dir, "budget.json"))
+    budget = Budget(os.path.join(out_dir, "budget.json"),
+                    envelope_path=envelope_path)
 
-    prompts = {"architecture-manifest": build_architecture_prompt(manifest, metas)}
+    prompts = {"architecture-manifest":
+               build_architecture_prompt(manifest, metas, intent=intent)}
     for name, msgs in prompts.items():
         with open(os.path.join(prompts_dir, name + ".json"), "w",
                   encoding="utf-8") as f:
@@ -454,7 +475,7 @@ def run_synthesis(manifest, metas, out_dir, env=None):
             json.dump(architecture, f, indent=2)
         result["steps"]["architecture-manifest"] = "done"
 
-        glue_msgs = build_glue_prompt(manifest, architecture)
+        glue_msgs = build_glue_prompt(manifest, architecture, intent=intent)
         glue_resp, _ = call_gated(
             "glue-synthesis", glue_msgs, out_dir, budget, env=env,
             reasoning_effort=PIPELINE_REASONING_EFFORT,
@@ -470,7 +491,8 @@ def run_synthesis(manifest, metas, out_dir, env=None):
             full = os.path.join(fusion_dir, rel)
             with open(full, encoding="utf-8", errors="replace") as f:
                 glue_contents[rel] = f.read()
-        test_msgs = build_test_prompt(manifest, architecture, glue_contents)
+        test_msgs = build_test_prompt(manifest, architecture, glue_contents,
+                                  intent=intent)
         test_resp, _ = call_gated(
             "test-synthesis", test_msgs, out_dir, budget, env=env,
             reasoning_effort=PIPELINE_REASONING_EFFORT,

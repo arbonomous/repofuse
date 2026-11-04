@@ -225,10 +225,21 @@
         ? `<div class="idea-head">Ideas are proposals, not built or tested apps. Their security has not been reviewed.</div>`
         : "");
     cards.forEach(c => {
+      // Card text derives from server/analysis data: textContent only.
       const b = document.createElement("button");
       b.className = "idea-card";
-      b.innerHTML = `<h4>${c.title}</h4><p>${c.what}</p>` +
-        `<div class="idea-fit"><b>why these repos:</b> ${c.fit.join(" + ")}</div>`;
+      const h = document.createElement("h4");
+      h.textContent = String(c.title);
+      const p = document.createElement("p");
+      p.textContent = String(c.what);
+      const fit = document.createElement("div");
+      fit.className = "idea-fit";
+      const fb = document.createElement("b");
+      fb.textContent = "why these repos: ";
+      fit.appendChild(fb);
+      fit.appendChild(document.createTextNode(
+        (Array.isArray(c.fit) ? c.fit : [c.fit]).map(String).join(" + ")));
+      b.appendChild(h); b.appendChild(p); b.appendChild(fit);
       b.onclick = () => pickIdea(c, recordedPair);
       box.appendChild(b);
     });
@@ -237,7 +248,14 @@
   let lastIdeas = null;
   let buildInputDesc = null;  // truthful provenance of the build input card
   function pickIdea(card, recordedPair) {
-    log(`You picked: <span class="hl">${card.title}</span>`);
+    const pl = document.createElement("div");
+    pl.className = "log-line";
+    pl.appendChild(document.createTextNode("You picked: "));
+    const ph = document.createElement("span");
+    ph.className = "hl";
+    ph.textContent = String(card.title);
+    pl.appendChild(ph);
+    logEl.appendChild(pl);
     if (recordedPair && card.id === "notes-crud") {
       // This exact build is the recorded run. OFFER the replay explicitly;
       // never silently switch into REPLAY as if a new build started.
@@ -268,6 +286,15 @@
 
   function startBuild(card) {
     if (!lastRunId) return;
+    // FREE steering first: the picked idea enters the REAL core prompt
+    // bundle for this run's vendored repos (dry run, nothing sent).
+    fetch("/api/prepare-bundle", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: lastRunId, card }),
+    }).then(r => r.json()).then(resp => {
+      (resp.lines || [resp.error || "bundle preparation failed honestly"])
+        .forEach(t => logText(t));
+    }).catch(() => logText("bundle preparation unreachable honestly"));
     const li = lastIdeas || {};
     buildInputDesc = (li.source && li.source.indexOf("model:") === 0)
       ? "the AI-suggested idea you picked"
@@ -793,6 +820,7 @@
       if (FREEZE.startsWith("live")) {
         const rid = qs.get("run");
         if (rid) {
+          lastRunId = rid;
           // render a finished live run's real events instantly
           const snap = await fetch("/api/run/" + rid).then(r => r.json());
           setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
