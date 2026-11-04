@@ -163,6 +163,27 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
                  {"slug": slug, "exports": a["exports"][:24]})
         emit(run, "analyze", "stage_done", "Exports mapped.")
 
+        if not intent:
+            # Ideas mode: deterministic suggestions from the REAL analysis
+            # (no model call). The user picks one; only then would the paid
+            # stages matter.
+            try:
+                import ideas as ideas_mod
+                cards = ideas_mod.suggest(metas)
+            except Exception as e:
+                emit(run, "error", "error",
+                     f"idea suggestion failed honestly: {e}")
+                with _lock:
+                    run["status"] = "failed"
+                return
+            emit(run, "ideas", "ideas",
+                 "Build ideas derived locally from the actual exports above "
+                 "- no model call. Pick one, or describe your own.",
+                 {"cards": cards})
+            with _lock:
+                run["status"] = "ideas_ready"
+            return
+
         # --- the paid boundary: everything below needs a model call ---
         emit(run, "architecture", "blocked",
              "Architecture synthesis needs a model call. Paid generation is "

@@ -33,12 +33,12 @@
     <div class="repo-input"><span class="gh-icon">&#9679;</span>
       <input id="repo-b" value="https://github.com/coleifer/peewee" spellcheck="false">
     </div>
-    <label class="field-label">What should it do?</label>
-    <textarea id="intent" rows="2" spellcheck="false">A tiny notes API: save, list, read, edit and delete notes, persisted to SQLite.</textarea>
-    <button id="fuse-btn">Fuse repositories &#8594;</button>
-    <button id="replay-btn" class="replay-btn">Replay the recorded run (2026-11-04)</button>
+    <label class="field-label">What should it do? <span class="field-opt">(optional - or let RepoFuse suggest)</span></label>
+    <textarea id="intent" rows="2" spellcheck="false" placeholder="Leave blank and RepoFuse suggests builds from what the repos actually contain."></textarea>
+    <button id="fuse-btn">Suggest what to build &#8594;</button>
+    <button id="replay-btn" class="replay-btn">Replay the recorded notes build (2026-11-04)</button>
     <p id="replay-hint" class="setup-note"></p>
-    <p class="setup-note"><b>Fuse</b> really clones, pins and analyzes your repos now - then stops before the model stages (paid calls disabled). <b>Replay</b> shows the recorded microdot + peewee build&rsquo;s full pipeline, failure and repair included.</p>
+    <p class="setup-note"><b>Suggest</b> really clones, pins and analyzes your repos now, then proposes builds derived from their actual exports - local analysis, no AI call. Picking an idea (or writing your own) stops before the paid model stages. <b>Replay</b> shows the recorded microdot + peewee NOTES API build&rsquo;s full pipeline, failure and repair included - it is always that recorded example, never your inputs.</p>
   </div>
 </section>
 
@@ -51,6 +51,7 @@
         <svg id="graph" viewBox="0 0 900 420" preserveAspectRatio="xMidYMid meet"></svg>
       </div>
       <div id="code-panel">
+        <div id="ideas-cards" class="hidden"></div>
         <div id="code-tabs"></div>
         <pre id="code-view"><code id="code-content"></code></pre>
         <div id="token-meter"></div>

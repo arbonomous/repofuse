@@ -36,6 +36,32 @@ labeled offline repair (4/4 + vacuity) and edit/delete extension (7/7).
 The badge reads "REPLAY - recorded run 2026-11-04". The timeline keeps the
 AI stages and the later assistant stages visually distinct.
 
+## Idea suggestions (leave the intent blank)
+
+If you leave "What should it do?" empty, live mode runs the same real
+ingest + analyze stages, then `ideas.py` proposes up to three build ideas
+from the capabilities it actually detected in the two repos' real exports
+(web framework, ORM, auth, templates, realtime, CLI, http client,
+validation). Each card cites the exact exports that support it.
+
+This is DETERMINISTIC LOCAL ANALYSIS, not an AI brainstorm - no model
+call, no key, no cost, and the UI labels it that way ("SUGGESTED FROM THE
+REAL ANALYSIS - local, no model call"). The same idea detection on repos
+with no recognized capabilities says honestly that the analysis is too
+shallow to propose anything specific.
+
+Picking an idea does not conjure a build:
+
+- "Tiny notes API" on the recorded microdot + peewee pair does NOT start
+  anything by itself: it explains that this exact build was recorded on
+  2026-11-04 and offers an explicit "Watch the recorded replay" button
+  (with a Back-to-ideas escape). The Mode 2 replay starts only from that
+  click - picking an idea never silently becomes a new "build".
+- Any other card stops at the architecture stage with an explicit
+  "needs AI generation - disabled in this demo (no grant, no key)"
+  verdict. Turning a picked idea into code is a paid model call and
+  stays off until a fresh per-run grant exists.
+
 ## The notes preview is the REAL app
 
 The result screen's notes widget talks HTTP to the actual verified example
@@ -75,6 +101,9 @@ post-tag pin, not a tag-commit claim.
 ## Honesty contract (do not remove)
 
 - No live model calls anywhere; no keys; no claim of live paid generation.
+- Idea cards are deterministic proposals from the real static analysis,
+  never presented as AI output; picking one still stops at the paid
+  boundary unless it is the recorded build itself.
 - The unedited AI output FAILED; the working app is assistant-repaired and
   assistant-extended. Unattended AI fusion is the goal, not yet proven.
 - "What's real in this demo?" (top right) states all of this in product.
@@ -88,6 +117,8 @@ post-tag pin, not a tag-commit claim.
 
 ## Files
 
+- `ideas.py` - deterministic idea suggestion from detected capabilities
+  (no model calls).
 - `serve.py` - local server: static UI, /api/fuse (real free pipeline),
   /api/run/<id> (real event stream), /notes* (proxy to the real app).
 - `index.html`, `styles.css`, `app.js` - the UI (vanilla JS).

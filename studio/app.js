@@ -28,8 +28,9 @@
   const inputsMatchRecorded = () => {
     const a = norm($("#repo-a").value), b = norm($("#repo-b").value);
     const ra = norm(R.recorded_inputs.repo_a), rb = norm(R.recorded_inputs.repo_b);
+    const intent = $("#intent").value.trim();
     return ({[a]:1,[b]:1}[ra] && {[a]:1,[b]:1}[rb]) &&
-           /notes?/i.test($("#intent").value);
+           (intent === "" || /notes?/i.test(intent));
   };
 
   /* ---------------- modal ---------------- */
@@ -191,6 +192,57 @@
   const tokenMeter = (html) => ($("#token-meter").innerHTML = html);
   const CODE_TABS = ["generated/app.py", "test_fused.py", "assistant_ext.py"];
 
+  /* ---------------- idea cards (from real local analysis, no model) ---------------- */
+  function renderIdeaCards(cards, recordedPair) {
+    lastIdeas = { cards, recordedPair };
+    const box = $("#ideas-cards");
+    $("#code-tabs").innerHTML = "";
+    $("#code-content").textContent = "";
+    $("#code-view").classList.add("hidden");
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="idea-head">SUGGESTED FROM THE REAL ANALYSIS - local, no model call</div>`;
+    cards.forEach(c => {
+      const b = document.createElement("button");
+      b.className = "idea-card";
+      b.innerHTML = `<h4>${c.title}</h4><p>${c.what}</p>` +
+        `<div class="idea-fit"><b>why these repos:</b> ${c.fit.join(" + ")}</div>`;
+      b.onclick = () => pickIdea(c, recordedPair);
+      box.appendChild(b);
+    });
+  }
+
+  let lastIdeas = null;
+  function pickIdea(card, recordedPair) {
+    log(`You picked: <span class="hl">${card.title}</span>`);
+    if (recordedPair && card.id === "notes-crud") {
+      // This exact build is the recorded run. OFFER the replay explicitly;
+      // never silently switch into REPLAY as if a new build started.
+      const box = $("#ideas-cards");
+      box.innerHTML = `<div class="idea-head">THIS EXACT BUILD WAS RECORDED - your choice</div>` +
+        `<div class="idea-offer"><p>A notes API fused from pinned microdot 2.7.0 + peewee (declared 4.5.3) ` +
+        `was really built on 2026-11-04, including its paid model stages. Nothing new will be ` +
+        `generated - you can watch the recording of that real run: the original AI output, its ` +
+        `acceptance failure, and the labeled assistant repair.</p>` +
+        `<div class="offer-actions"><button class="offer-replay">Watch the recorded replay</button>` +
+        `<button class="offer-back">Back to ideas</button></div></div>`;
+      box.querySelector(".offer-replay").onclick = () => {
+        log(`Watching the <span class="hl">recorded replay</span> of the 2026-11-04 notes build.`);
+        $("#ideas-cards").classList.add("hidden");
+        $("#code-view").classList.remove("hidden");
+        runReplay();
+      };
+      box.querySelector(".offer-back").onclick = () => {
+        if (lastIdeas) renderIdeaCards(lastIdeas.cards, lastIdeas.recordedPair);
+      };
+      return;
+    }
+    $("#ideas-cards").classList.add("hidden");
+    $("#code-view").classList.remove("hidden");
+    setStage("architecture", "blocked", "needs model grant");
+    verdict(`'${card.title}' needs AI generation - disabled in this demo (no grant, no key). ` +
+            `The recorded-run replay shows the full pipeline for the pinned microdot + peewee pair.`, "fail");
+  }
+
   /* ================= LIVE MODE (real free stages) ================= */
   async function startLive() {
     const repoA = $("#repo-a").value, repoB = $("#repo-b").value, intent = $("#intent").value;
@@ -211,6 +263,8 @@
     drawGraph({});
     logEl.innerHTML = "";
     $("#code-content").textContent = "";
+    $("#ideas-cards").classList.add("hidden");
+    $("#code-view").classList.remove("hidden");
     setStage("ingest", "running");
     setStage("architecture", "pending");
     log(`Run <span class="hl">${resp.run_id}</span> started - <span class="hl">real free stages</span>, paid generation disabled.`);
@@ -257,6 +311,11 @@
         }
         if (ev.kind === "stage_done" && ev.stage === "analyze")
           setStage("analyze", "done", "exports mapped");
+        if (ev.kind === "ideas" && ev.data && ev.data.cards) {
+          setStage("architecture", "pending", "pick an idea below");
+          renderIdeaCards(ev.data.cards, snap.recorded_pair);
+          tokenMeter(`ideas from <b>local analysis</b> &middot; 0 model calls made`);
+        }
       }
       if (snap.status !== "running") break;
       await new Promise(r => setTimeout(r, 500));
@@ -272,6 +331,8 @@
     buildRail(REPLAY_STAGES);
     logEl.innerHTML = "";
     $("#code-content").textContent = "";
+    $("#ideas-cards").classList.add("hidden");
+    $("#code-view").classList.remove("hidden");
     drawGraph({});
 
     setStage("ingest", "running");
@@ -457,13 +518,20 @@
   const replayBtn = $("#replay-btn");
   replayBtn.onclick = () => runReplay();
   $("#intent, #repo-a, #repo-b").forEach ? null : null;
+  const fuseBtn = $("#fuse-btn");
+  const syncFuseLabel = () => {
+    fuseBtn.innerHTML = $("#intent").value.trim()
+      ? "Fuse repositories &#8594;" : "Suggest what to build &#8594;";
+  };
+  syncFuseLabel();
   ["#intent", "#repo-a", "#repo-b"].forEach(sel => $(sel).addEventListener("input", () => {
+    syncFuseLabel();
     const ok = inputsMatchRecorded();
     replayBtn.disabled = !ok;
     replayBtn.title = ok ? "" : "Replay exists only for the recorded microdot + peewee notes build";
     $("#replay-hint").textContent = ok
-      ? "Inputs match the recorded run - you can replay its full paid pipeline."
-      : "Replay unlocks only for the recorded microdot + peewee notes build. Your inputs run the real free stages instead.";
+      ? "Repos match the RECORDED NOTES API build (microdot + peewee, 2026-11-04) - replay that recorded run's full paid pipeline."
+      : "Replay exists only for the RECORDED NOTES API build (pinned microdot + peewee, 2026-11-04). Your inputs run the real free stages instead.";
   }));
   replayBtn.disabled = false; // default inputs match
 
@@ -489,14 +557,21 @@
               if (r) r.exports = ev.data.exports.slice(0, 6);
             }
             if (ev.kind === "blocked") { verdict("STOPPED AT THE PAID BOUNDARY - no model call made", "fail"); log(ev.text); }
+            else if (ev.kind === "ideas" && ev.data && ev.data.cards) {
+              renderIdeaCards(ev.data.cards, snap.recorded_pair);
+            }
             else if (ev.kind !== "stage_done") log(ev.text);
           });
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "done", "exports mapped");
-          setStage("architecture", "blocked", "needs model grant");
+          setStage("architecture", snap.status === "ideas_ready" ? "pending" : "blocked",
+                   snap.status === "ideas_ready" ? "pick an idea below" : "needs model grant");
           drawGraph({ repos: true, exports: true, repoData: repoLive });
-          typeCode("exports", ["exports"], (repoLive[1] ? repoLive[1].exports : []).join("\n"), 1500);
-          tokenMeter(`paid stages: <b>disabled</b> &middot; 0 model calls made`);
+          if (snap.status !== "ideas_ready")
+            typeCode("exports", ["exports"], (repoLive[1] ? repoLive[1].exports : []).join("\n"), 1500);
+          tokenMeter(snap.status === "ideas_ready"
+            ? `ideas from <b>local analysis</b> &middot; 0 model calls made`
+            : `paid stages: <b>disabled</b> &middot; 0 model calls made`);
         }
         return;
       }

@@ -229,3 +229,21 @@ body.freeze .screen.active { animation: none; }
 .replay-badge.local .dot { background: var(--dim); animation: none; }
 
 .graph-caption { fill: #6b7694; font: 10.5px var(--mono); }
+
+.field-opt { color: var(--dim); font-weight: 400; text-transform: none; letter-spacing: 0; }
+#ideas-cards { display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow-y: auto; }
+#ideas-cards.hidden { display: none; }
+.idea-head { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-bottom: 2px; }
+.idea-card { border: 1px solid #223055; border-radius: 10px; padding: 12px 14px; background: #111830; cursor: pointer; transition: border-color .15s, transform .15s; text-align: left; }
+.idea-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.idea-card h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
+.idea-card p { margin: 0 0 6px; font-size: 12px; color: #aab4d0; line-height: 1.45; }
+.idea-fit { font-family: var(--mono); font-size: 10.5px; color: var(--pass); }
+.idea-fit b { color: var(--dim); font-weight: 400; }
+
+.idea-offer { border: 1px solid #223055; border-radius: 10px; padding: 14px; background: #111830; }
+.idea-offer p { margin: 0 0 10px; font-size: 12px; color: #aab4d0; line-height: 1.5; }
+.idea-offer .offer-actions { display: flex; gap: 8px; }
+.idea-offer button { font: inherit; font-size: 12.5px; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.idea-offer .offer-replay { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #0b0e14; border: 0; font-weight: 600; }
+.idea-offer .offer-back { background: transparent; color: var(--dim); border: 1px solid var(--line); }
