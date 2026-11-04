@@ -93,6 +93,10 @@
     line.textContent = text;
     logEl.appendChild(line);
   }
+  function escapeEventText(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g,
+      ch => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]));
+  }
   function log(html) {
     const line = document.createElement("div");
     line.className = "log-line";
@@ -103,7 +107,8 @@
   function verdict(html, kind) {
     const el = document.createElement("div");
     el.className = "log-verdict " + kind;
-    el.innerHTML = html;
+    // Verdicts never need markup: server errors and app names are text.
+    el.textContent = html;
     logEl.appendChild(el);
     logEl.scrollTop = logEl.scrollHeight;
   }
@@ -326,7 +331,7 @@
 
   function resumeBuild(runId) {
     setStage("verify", "running", "re-hash + acceptance");
-    log(`Resuming <span class="hl">${runId}</span> - <span class="hl">no generation</span>: the retained bytes are re-hashed against the review manifest, then the reviewed acceptance tests run.`);
+    log(`Resuming <span class="hl">${escapeEventText(runId)}</span> - <span class="hl">no generation</span>: the retained bytes are re-hashed against the review manifest, then the reviewed acceptance tests run.`);
     fetch("/api/build/resume", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: runId }),
@@ -409,7 +414,7 @@
     setStage("safety", "pending");
     setStage("vendor", "pending");
     setStage("architecture", "pending");
-    log(`Run <span class="hl">${resp.run_id}</span> started - <span class="hl">real free stages</span>, paid generation disabled.`);
+    log(`Run <span class="hl">${escapeEventText(resp.run_id)}</span> started - <span class="hl">real free stages</span>, paid generation disabled.`);
     if (resp.recorded_pair)
       log(`This pair matches the recorded run - the <span class="hl">Replay</span> mode shows its full paid pipeline.`);
     await pollLive(resp.run_id);
@@ -463,7 +468,7 @@
           logText(ev.text);
           continue;
         }
-        if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${ev.text}`); verdict(ev.text, "fail"); }
+        if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${escapeEventText(ev.text)}`); verdict(ev.text, "fail"); }
         else if (ev.kind === "blocked") {
           setStage("architecture", "blocked", "needs model grant");
           const pa = ev.data && ev.data.paid_attempt;
@@ -472,7 +477,7 @@
             : pa && pa.spent === null
               ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
               : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
-          log(ev.text);
+          logText(ev.text);
           tokenMeterText(pa && pa.spent === true
             ? "paid stages: 1 model call made - its output rejected, nothing retried"
             : pa && pa.spent === null
@@ -480,7 +485,7 @@
               : "paid stages: disabled - 0 model calls made - 0 keys used");
         }
         else {
-          log(ev.text.replace(/(pinned at \w+|license \S+|exports,?)/g, '<span class="hl">$1</span>'));
+          log(escapeEventText(ev.text).replace(/(pinned at \w+|license [A-Za-z0-9_.-]+|exports,?)/g, '<span class="hl">$1</span>'));
           if (ev.data && ev.data.slug && ev.data.commit) {
             const existing = repoLive.find(r => r.name === ev.data.slug);
             if (!existing) repoLive.push({
@@ -531,13 +536,14 @@
         }
         if (ev.kind === "review") {
           const isGeneral = !!(ev.data && ev.data.general);
+          if (isGeneral) lastBuildGeneral = true;
           setStage("architecture", "done", isGeneral ? "manifest generated" : "plan accepted");
           setStage("glue", "done", isGeneral ? "generated, slots only" : "generated + linted");
           setStage("tests", "done", isGeneral ? "generated, test slot only" : "generated + linted");
           setStage("verify", "blocked", "awaiting source review");
           setBadge("LIVE &middot; generated + pinned &middot; nothing executed", "live");
           verdict("PINNED FOR REVIEW - nothing executed; an independent reviewer must approve these exact bytes first", "fail");
-          log(ev.text);
+          logText(ev.text);
           if (ev.data && ev.data.files)
             typeCode("review", ["sha256"],
                      Object.entries(ev.data.files).map(([k, v]) => `${k}\n  ${v}`).join("\n"), 4000);
@@ -558,7 +564,7 @@
           setStage("verify", "done", "acceptance passed");
           setBadge("LIVE &middot; real build &middot; probe-verified", "live");
           verdict(`BUILD VERIFIED - ${ev.data.app_name} (unedited generated output)`, "pass");
-          log(ev.text);
+          logText(ev.text);
           initBuildApp(runId, ev.data);
         }
         if (ev.kind === "ideas" && ev.data && ev.data.cards) {
@@ -582,6 +588,14 @@
                 ? "ideas from local analysis - paid call state UNKNOWN - check the retained record before any retry"
                 : "ideas from local analysis - 0 model calls made"));
         }
+      }
+      // Historical events remain verbatim; current state wins for badges.
+      if (snap.status === "build_verified" && lastBuildGeneral) {
+        setBadge("LIVE &middot; reviewed bytes &middot; sandbox verified", "live");
+        verdict("REVIEWED BUILD VERIFIED - see history for generation and repairs", "pass");
+        tokenMeterText("Retained run history - no new generation requested by opening it. Historical paid stages remain in the log.");
+        const staleReview = document.getElementById("resume-btn");
+        if (staleReview) staleReview.remove();
       }
       if (snap.status !== "running" && snap.status !== "resuming") { liveSeen = seen; break; }
       await new Promise(r => setTimeout(r, 500));
@@ -721,7 +735,7 @@
   async function initBuildApp(runId, d) {
     $("#verdict-journey").innerHTML = `
       <div class="journey-card"><span class="j-badge pass">VERIFIED</span>
-        <h3>${d.app_name}</h3>
+        <h3>${escapeEventText(d.app_name)}</h3>
         <p>Generated from ${buildInputDesc || "the input card selected for this run"}
         and verified against its unedited output. The app below IS this
         build - spawned and probe-verified just now, not the recorded
@@ -784,11 +798,11 @@
     if (!notesReal) { list.innerHTML = `<div class="notes-empty">Backend offline.</div>`; return; }
     const res = await api(appBase, "GET");
     const notes = (res.data || []);
-    list.innerHTML = notes.length ? "" : `<div class="notes-empty">Nothing here yet - add a ${appEntity} above.</div>`;
+    list.innerHTML = notes.length ? "" : `<div class="notes-empty">Nothing here yet - add a ${escapeEventText(appEntity)} above.</div>`;
     notes.forEach(n => {
       const row = document.createElement("div");
       row.className = "note-row";
-      row.innerHTML = `<span class="note-id">#${n.id}</span>
+      row.innerHTML = `<span class="note-id">#${escapeEventText(n.id)}</span>
         <span class="note-body"></span>
         <button data-act="edit">Edit</button>
         <button data-act="del">Delete</button>`;
@@ -843,6 +857,30 @@
       : "Replay exists only for the RECORDED NOTES API build (pinned microdot + peewee, 2026-11-04). Your inputs run the real free stages instead.";
   }));
   replayBtn.disabled = false; // default inputs match
+
+  // Recover a retained general run from the local server. This reads
+  // real events only; review/verify/serve remain their normal HTTP gates.
+  $("#open-local-run").onclick = async () => {
+    const rid = $("#local-run-id").value.trim();
+    if (!/^run-[0-9a-f]{16}$/.test(rid)) {
+      $("#local-run-message").textContent = "Enter a valid local run ID.";
+      return;
+    }
+    const response = await fetch("/api/run/" + rid);
+    if (!response.ok) {
+      $("#local-run-message").textContent = "That run is not on this machine.";
+      return;
+    }
+    lastRunId = rid; lastBuildGeneral = false; liveSeen = 0;
+    show("#screen-build");
+    buildRail(["ingest", "analyze", "safety", "vendor", "architecture",
+      "glue", "tests", "verify"].map(id => ({id, label: id})));
+    logEl.innerHTML = "";
+    tokenMeterText("Retained local history - no new generation requested.");
+    setBadge("LIVE &middot; retained local run &middot; no new generation", "live");
+    logText("Opening retained local run " + rid + ". All execution gates revalidate; no generation requested.");
+    await pollLive(rid);
+  };
 
   /* -------- saved reviewed builds present on this machine -------- */
   (async () => {
@@ -918,7 +956,7 @@
               const r = repoLive.find(x => x.name === ev.data.slug);
               if (r) r.exports = ev.data.exports.slice(0, 6);
             }
-            if (ev.kind === "blocked") { verdict("STOPPED AT THE PAID BOUNDARY - no model call made", "fail"); log(ev.text); }
+            if (ev.kind === "blocked") { verdict("STOPPED AT THE PAID BOUNDARY - no model call made", "fail"); logText(ev.text); }
             else if (ev.kind === "ideas" && ev.data && ev.data.cards) {
               renderIdeaCards(ev.data.cards, snap.recorded_pair,
                               ev.data.source, ev.data.provenance,
@@ -930,7 +968,7 @@
               else if (ev.data.paid_attempt && ev.data.paid_attempt.spent === null)
                 setBadge("LIVE &middot; free stages &middot; paid call state UNKNOWN", "live");
             }
-            else if (ev.kind !== "stage_done") log(ev.text);
+            else if (ev.kind !== "stage_done") logText(ev.text);
           });
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "done", "exports mapped");

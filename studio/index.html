@@ -39,6 +39,10 @@
     <button id="fuse-btn">Suggest what to build &#8594;</button>
     <button id="replay-btn" class="replay-btn">Replay the recorded notes build (2026-11-04)</button>
     <p id="replay-hint" class="setup-note"></p>
+    <label class="field-label" for="local-run-id">Retained run on this machine</label>
+    <input id="local-run-id" placeholder="run-0123456789abcdef" spellcheck="false">
+    <button id="open-local-run" class="replay-btn">Open retained local run (no generation)</button>
+    <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events; execution still needs all review gates.</p>
     <p class="setup-note"><b>Suggest</b> really clones, pins and analyzes your repos now, then proposes builds derived from their actual exports - local analysis, no AI call. Picking an idea (or writing your own) stops before the paid model stages. <b>Replay</b> shows the recorded microdot + peewee NOTES API build&rsquo;s full pipeline, failure and repair included - it is always that recorded example, never your inputs.</p>
   </div>
 </section>
