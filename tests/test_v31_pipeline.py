@@ -377,3 +377,25 @@ def test_live_pass_run_still_needs_no_ack(tmp_path, monkeypatch):
                        "data": {"slug": "a/x", "commit": "c" * 40}}]}
     ok, reason = serve.spend_safety_gate(run)
     assert ok, reason
+
+
+def test_rehydrated_transitional_status_becomes_interrupted(tmp_path,
+                                                            monkeypatch):
+    """A persisted 'running'/'resuming' means the server died mid-run;
+    rehydration must not revive a worker that no longer exists."""
+    monkeypatch.setattr(serve, "RUNS", str(tmp_path))
+    for i, st in enumerate(("running", "resuming")):
+        rid = f"run-0123456789abcde{i}"
+        (tmp_path / f"{rid}-state.json").write_text(json.dumps(
+            {"run_id": rid, "status": st, "events": []}))
+    (tmp_path / "run-ffffffffffffffff-state.json").write_text(json.dumps(
+        {"run_id": "run-ffffffffffffffff",
+         "status": "stopped_at_paid_boundary", "events": []}))
+    serve._rehydrate_runs()
+    assert serve._runs["run-0123456789abcde0"]["status"] == "interrupted"
+    assert serve._runs["run-0123456789abcde1"]["status"] == "interrupted"
+    assert (serve._runs["run-ffffffffffffffff"]["status"]
+            == "stopped_at_paid_boundary")
+    for rid in ("run-0123456789abcde0", "run-0123456789abcde1",
+                "run-ffffffffffffffff"):
+        serve._runs.pop(rid, None)

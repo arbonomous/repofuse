@@ -160,9 +160,17 @@ def _rehydrate_runs():
             continue
         if not isinstance(blob, dict):
             continue
+        # Persistence is emit-driven, so the file can lag one transition:
+        # a persisted transitional status ("running"/"resuming") means the
+        # server died mid-pipeline - the worker thread is gone and the run
+        # will never progress. Rehydrate those as honestly "interrupted";
+        # resumption still goes through the run-dir-backed resume path.
+        status = blob.get("status", "failed")
+        if status in ("running", "resuming"):
+            status = "interrupted"
         with _lock:
             _runs[rid] = {"run_id": rid,
-                          "status": blob.get("status", "failed"),
+                          "status": status,
                           "events": blob.get("events", []),
                           "repo_a": blob.get("repo_a"),
                           "repo_b": blob.get("repo_b"),
