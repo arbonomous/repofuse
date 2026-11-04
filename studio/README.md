@@ -84,9 +84,13 @@ count/reserve/call/commit flow runs under an exclusive non-blocking flock
 (studio/paid-ideas/idea.lock) plus an in-process thread lock, so a second
 server PROCESS or thread refuses before any traffic - one grant stays one
 call no matter how many servers are started. A host without flock
-(non-POSIX) refuses the paid path outright. The raw model response is retained BEFORE parsing; every
-idea's export citations are re-verified against the actually observed
-exports and unverifiable ideas are discarded. Model cards are labeled
+(non-POSIX) refuses the paid path outright. The request uses documented
+constrained decoding (response_format json_schema) with a DEFINED
+{"ideas": [...]} envelope - the exact real qualification failure (a
+{"response": [...]} wrapper) and bare arrays both refuse by design. The
+raw model response is retained BEFORE parsing; every idea's export
+citations are re-verified against the actually observed exports and
+unverifiable ideas are discarded. Model cards are labeled
 "SUGGESTED BY <model> - 1 paid model call (X in / Y out)"; local cards say
 "SUGGESTED FROM THE REAL ANALYSIS - local, no model call". Never blended.
 Only export names, pins and license guesses leave the machine - never file
@@ -99,7 +103,7 @@ until a supported secure execution path is grounded (no vault/sandbox key
 on the Mac is assumed). Picking an idea never starts a build by itself;
 paid code generation past idea selection is a separate grant.
 
-Offline tests: `python3 studio/offline_test_ideas_ai.py` - 18 cases over
+Offline tests: `python3 studio/offline_test_ideas_ai.py` - 17 cases over
 every fail-closed path (stub transport, REAL budget machinery, no network,
 no key, no model).
 
@@ -166,7 +170,7 @@ post-tag pin, not a tag-commit claim.
   fails closed on envelope/key/budget/transport/schema guards).
 - `envelope.ideas.EXAMPLE.json` - inert template for the minimal grant
   shape; the armed file is never shipped.
-- `offline_test_ideas_ai.py` - 18 offline fail-closed tests for ideas_ai.
+- `offline_test_ideas_ai.py` - 17 offline fail-closed tests for ideas_ai.
 - `serve.py` - local server: static UI, /api/fuse (real free pipeline),
   /api/run/<id> (real event stream), /notes* (proxy to the real app).
 - `index.html`, `styles.css`, `app.js` - the UI (vanilla JS).

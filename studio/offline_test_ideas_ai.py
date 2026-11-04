@@ -45,22 +45,22 @@ class StubModelAPI:
         return self.chat_result
 
 
-GOOD_CONTENT = json.dumps([
+GOOD_CONTENT = json.dumps({"ideas": [
     {"title": "Tiny notes API", "what": "REST notes on a real database.",
      "fit": ["Microdot", "Model"]},
     {"title": "Inventory API", "what": "Track items with quantities.",
      "fit": ["HTTPException", "Database"]},
-])
-FAKE_EXPORT_CONTENT = json.dumps([
+]})
+FAKE_EXPORT_CONTENT = json.dumps({"ideas": [
     {"title": "Fake idea", "what": "cites things that do not exist",
      "fit": ["NotARealExport"]},
     {"title": "Real idea", "what": "cites real exports only",
      "fit": ["Microdot"]},
-])
-ALL_FAKE_CONTENT = json.dumps([
+]})
+ALL_FAKE_CONTENT = json.dumps({"ideas": [
     {"title": "Fake", "what": "all citations invented",
      "fit": ["Nope"]},
-])
+]})
 METAS = {
     "microdot": {"commit_sha": "7742db9ff9f49635de3387145fafe56bf2377a97",
                  "license_guess": "MIT",
@@ -286,15 +286,133 @@ def t_non_json_retained():
         teardown(old)
 
 
-def t_not_array():
-    stub = StubModelAPI(); good_chat(stub, '{"ideas": []}')
+def t_rejected_provenance_durable():
+    """Every spent rejection leaves a durable record next to the raw:
+    reason/model/usage/measured/ts - without touching raw or ledger."""
+    stub = StubModelAPI()
+    good_chat(stub, json.dumps({"response": [
+        {"title": "x", "what": "y", "fit": ["Model"]}]}))
+    tmp, old = setup(stub)
+    try:
+        try:
+            ideas_ai.suggest_with_model(METAS, "run-t", state_dir=tmp)
+            raise AssertionError("should have raised")
+        except ideas_ai.Refused:
+            pass
+        rec = json.load(open(os.path.join(tmp, "rejected-run-t.json")))
+        assert rec["status"] == "rejected"
+        assert rec["spent"] is True
+        assert "envelope" in rec["reason"]
+        assert isinstance(rec["measured_input_tokens"], int)
+        assert rec["measured_input_tokens"] > 0
+        assert rec["usage"] is not None and "input" in rec["usage"]
+        assert rec["model"] and rec["ts"]
+        # raw and consumed ledger untouched by the record write
+        raw = json.load(open(os.path.join(tmp, "raw-run-t.json")))
+        assert "response" in json.loads(raw["content"])
+        ledger = json.load(open(os.path.join(tmp, "idea-ledger.json")))
+        assert ledger  # still parses; reservation stands
+    finally:
+        teardown(old)
+
+
+def t_no_rejected_record_on_success():
+    stub = StubModelAPI()
+    good_chat(stub)
+    tmp, old = setup(stub)
+    try:
+        cards, prov = ideas_ai.suggest_with_model(METAS, "run-t",
+                                                  state_dir=tmp)
+        assert cards
+        assert not os.path.exists(os.path.join(tmp, "rejected-run-t.json"))
+        assert os.path.exists(os.path.join(tmp, "provenance-run-t.json"))
+    finally:
+        teardown(old)
+
+
+def t_indeterminate_record_on_unknown_error():
+    """A non-Refused escape after the reservation must be recorded as
+    spent UNKNOWN (null), never as zero."""
+    stub = StubModelAPI()
+    good_chat(stub)
+    def boom(messages, **kw):
+        raise ValueError("transport exploded mid-call")
+    stub.chat_completion = boom
+    tmp, old = setup(stub)
+    try:
+        try:
+            ideas_ai.suggest_with_model(METAS, "run-t", state_dir=tmp)
+            raise AssertionError("should have raised")
+        except ValueError:
+            pass
+        rec = json.load(open(os.path.join(tmp, "rejected-run-t.json")))
+        assert rec["status"] == "rejected"
+        assert rec["spent"] is None  # indeterminate, not False, not True
+        assert "transport exploded" in rec["reason"]
+        assert isinstance(rec["measured_input_tokens"], int)
+    finally:
+        teardown(old)
+
+
+def t_bare_array_rejected():
+    """Bare arrays were the old contract; under the defined envelope they
+    must REFUSE - strictness, not repair."""
+    stub = StubModelAPI()
+    good_chat(stub, json.dumps([{"title": "x", "what": "y", "fit": ["Model"]}]))
     tmp, old = setup(stub)
     try:
         try:
             ideas_ai.suggest_with_model(METAS, "run-t", state_dir=tmp)
             raise AssertionError("should have raised")
         except ideas_ai.Refused as e:
-            assert e.spent and "not a JSON array" in str(e)
+            assert e.spent and "envelope" in str(e)
+    finally:
+        teardown(old)
+
+
+def t_real_wrapper_shape_still_refused():
+    """Regression for the REAL qualification failure: {"response": [...]}
+    must refuse exactly as it did live."""
+    stub = StubModelAPI()
+    good_chat(stub, json.dumps({"response": [
+        {"title": "Tiny Form Logger API", "what": "real card",
+         "fit": ["Microdot", "Request"]}]}))
+    tmp, old = setup(stub)
+    try:
+        try:
+            ideas_ai.suggest_with_model(METAS, "run-t", state_dir=tmp)
+            raise AssertionError("should have raised")
+        except ideas_ai.Refused as e:
+            assert e.spent and "envelope" in str(e)
+        raw = json.load(open(os.path.join(tmp, "raw-run-t.json")))
+        assert "response" in json.loads(raw["content"])  # verbatim retained
+    finally:
+        teardown(old)
+
+
+def t_documented_schema_sent():
+    """The request must use the documented json_schema constrained-decoding
+    format with the DEFINED envelope - not json_object, not guesses."""
+    captured = {}
+    stub = StubModelAPI()
+    real_chat = stub.chat_completion
+    def spy(messages, **kw):
+        captured.update(kw)
+        return real_chat(messages, **kw)
+    stub.chat_completion = spy
+    good_chat(stub)
+    tmp, old = setup(stub)
+    try:
+        ideas_ai.suggest_with_model(METAS, "run-t", state_dir=tmp)
+        rf = captured.get("response_format") or {}
+        assert rf.get("type") == "json_schema", rf
+        js = rf.get("json_schema") or {}
+        schema = js.get("schema") or {}
+        assert schema.get("type") == "object"
+        assert schema.get("required") == ["ideas"]
+        assert schema["properties"]["ideas"]["type"] == "array"
+        assert captured.get("reasoning_effort") == "minimal"
+        assert captured.get("max_tokens") == ideas_ai.ALLOWED["max_output_tokens"]
     finally:
         teardown(old)
 
@@ -325,12 +443,12 @@ def t_all_fake_refused():
 
 
 def t_schema_violations_dropped():
-    bad = json.dumps([
+    bad = json.dumps({"ideas": [
         {"title": "x" * 200, "what": "title too long", "fit": ["Model"]},
         {"title": "No fit", "what": "empty citations", "fit": []},
         {"title": "Good", "what": "valid", "fit": ["Model", "Database"]},
         "not even an object",
-    ])
+    ]})
     stub = StubModelAPI(); good_chat(stub, bad)
     tmp, old = setup(stub)
     try:
@@ -438,7 +556,12 @@ if __name__ == "__main__":
         count_over_cap=t_count_over_cap,
         charged_call_error=t_charged_call_error,
         non_json_retained=t_non_json_retained,
-        not_array=t_not_array,
+        rejected_provenance_durable=t_rejected_provenance_durable,
+        no_rejected_record_on_success=t_no_rejected_record_on_success,
+        indeterminate_record_on_unknown_error=t_indeterminate_record_on_unknown_error,
+        bare_array_rejected=t_bare_array_rejected,
+        real_wrapper_shape_still_refused=t_real_wrapper_shape_still_refused,
+        documented_schema_sent=t_documented_schema_sent,
         fake_export_dropped=t_fake_export_dropped,
         all_fake_refused=t_all_fake_refused,
         schema_violations_dropped=t_schema_violations_dropped,

@@ -193,8 +193,8 @@
   const CODE_TABS = ["generated/app.py", "test_fused.py", "assistant_ext.py"];
 
   /* ---------------- idea cards (from real local analysis, no model) ---------------- */
-  function renderIdeaCards(cards, recordedPair, source, provenance) {
-    lastIdeas = { cards, recordedPair, source, provenance };
+  function renderIdeaCards(cards, recordedPair, source, provenance, paidAttempt) {
+    lastIdeas = { cards, recordedPair, source, provenance, paidAttempt };
     const box = $("#ideas-cards");
     $("#code-tabs").innerHTML = "";
     $("#code-content").textContent = "";
@@ -205,9 +205,15 @@
       ? `SUGGESTED BY ${source.slice(6).toUpperCase()} - 1 paid model call` +
         (provenance && provenance.usage
           ? ` (${provenance.usage.input} in / ${provenance.usage.output} out)` : "")
-      : "SUGGESTED FROM THE REAL ANALYSIS - local, no model call";
+      : paidAttempt && paidAttempt.spent === true
+        ? "SUGGESTED FROM THE REAL ANALYSIS - local fallback - 1 paid call made, output rejected"
+        : paidAttempt && paidAttempt.spent === null
+          ? "SUGGESTED FROM THE REAL ANALYSIS - local fallback - paid call state UNKNOWN"
+          : "SUGGESTED FROM THE REAL ANALYSIS - local, no model call";
     box.innerHTML = `<div class="idea-head">${head}</div>` +
-      (fromModel ? `<p class="idea-fit">Ideas are proposals, not built or tested apps. Their security has not been reviewed.</p>` : "");
+      (fromModel
+        ? `<div class="idea-head">Ideas are proposals, not built or tested apps. Their security has not been reviewed.</div>`
+        : "");
     cards.forEach(c => {
       const b = document.createElement("button");
       b.className = "idea-card";
@@ -322,12 +328,22 @@
         if (ev.kind === "ideas" && ev.data && ev.data.cards) {
           setStage("architecture", "pending", "pick an idea below");
           renderIdeaCards(ev.data.cards, snap.recorded_pair,
-                          ev.data.source, ev.data.provenance);
+                          ev.data.source, ev.data.provenance,
+                          ev.data.paid_attempt);
           const p = ev.data.provenance;
+          const pa = ev.data.paid_attempt;
           if (p) setBadge("LIVE &middot; free stages &middot; 1 paid idea call", "live");
+          else if (pa && pa.spent === true)
+            setBadge("LIVE &middot; free stages &middot; 1 paid call (output rejected)", "live");
+          else if (pa && pa.spent === null)
+            setBadge("LIVE &middot; free stages &middot; paid call state UNKNOWN", "live");
           tokenMeter(p
             ? `ideas from <b>${p.model}</b> &middot; 1 model call &middot; <b>${p.usage.input}</b> in / <b>${p.usage.output}</b> out`
-            : `ideas from <b>local analysis</b> &middot; 0 model calls made`);
+            : (pa && pa.spent === true
+              ? `ideas from <b>local analysis</b> &middot; 1 model call made &middot; its output rejected, fallback shown`
+              : pa && pa.spent === null
+                ? `ideas from <b>local analysis</b> &middot; paid call state UNKNOWN &middot; check the retained record before any retry`
+                : `ideas from <b>local analysis</b> &middot; 0 model calls made`));
         }
       }
       if (snap.status !== "running") break;
@@ -572,9 +588,14 @@
             if (ev.kind === "blocked") { verdict("STOPPED AT THE PAID BOUNDARY - no model call made", "fail"); log(ev.text); }
             else if (ev.kind === "ideas" && ev.data && ev.data.cards) {
               renderIdeaCards(ev.data.cards, snap.recorded_pair,
-                              ev.data.source, ev.data.provenance);
+                              ev.data.source, ev.data.provenance,
+                              ev.data.paid_attempt);
               if (ev.data.provenance)
                 setBadge("LIVE &middot; free stages &middot; 1 paid idea call", "live");
+              else if (ev.data.paid_attempt && ev.data.paid_attempt.spent === true)
+                setBadge("LIVE &middot; free stages &middot; 1 paid call (output rejected)", "live");
+              else if (ev.data.paid_attempt && ev.data.paid_attempt.spent === null)
+                setBadge("LIVE &middot; free stages &middot; paid call state UNKNOWN", "live");
             }
             else if (ev.kind !== "stage_done") log(ev.text);
           });
@@ -587,10 +608,15 @@
             typeCode("exports", ["exports"], (repoLive[1] ? repoLive[1].exports : []).join("\n"), 1500);
           const ideaEv = (snap.events || []).find(e => e.kind === "ideas" && e.data && e.data.cards);
           const ip = ideaEv && ideaEv.data.provenance;
+          const ipa = ideaEv && ideaEv.data.paid_attempt;
           tokenMeter(snap.status === "ideas_ready"
             ? (ip
               ? `ideas from <b>${ip.model}</b> &middot; 1 model call &middot; <b>${ip.usage.input}</b> in / <b>${ip.usage.output}</b> out`
-              : `ideas from <b>local analysis</b> &middot; 0 model calls made`)
+              : (ipa && ipa.spent === true
+                ? `ideas from <b>local analysis</b> &middot; 1 model call made &middot; its output rejected, fallback shown`
+                : ipa && ipa.spent === null
+                  ? `ideas from <b>local analysis</b> &middot; paid call state UNKNOWN &middot; check the retained record before any retry`
+                  : `ideas from <b>local analysis</b> &middot; 0 model calls made`))
             : `paid stages: <b>disabled</b> &middot; 0 model calls made`);
         }
         return;
