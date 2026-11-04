@@ -28,8 +28,13 @@ approvals/<run>.json), and the server re-hashes the files at spawn
 time, refusing on any mismatch. Approved bytes then run as ordinary
 reviewed code under a least-privilege child environment (allowlist
 env - the server's own environment, including any model key, is never
-inherited - throwaway HOME, cwd in the build dir, 60s acceptance-test
-timeout) and are spawned for use on a random loopback port behind a
+inherited - throwaway HOME, cwd in the build dir, 60s test timeout).
+Verification is two-layered: the model's own acceptance tests run
+first (reported honestly, a supporting signal - NEVER the bar),
+then a FIXED assistant-written contract acceptance exercises the
+declared create/list/read/update/delete contract over real HTTP
+against the spawned reviewed app; only its pass registers the
+build, spawned for use on a random loopback port behind a
 create/read/delete ownership probe, proxied at
 /build/<run-id>/<prefix>. Unregistered, failed or tampered builds
 never execute. Residual, stated honestly: approved code has the

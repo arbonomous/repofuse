@@ -178,6 +178,81 @@ def main():
         serve.APPROVALS = old_approvals
         serve._builds.clear(); serve._builds.update(old_builds)
         serve._spawn_owned = old_spawn
+        # FIXED functional acceptance: real reviewed notes example passes
+        proc, port = serve._spawn_owned(
+            serve.FUSED_APP, serve.NOTES_RUNNER, "/notes", "text",
+            os.path.join(tempfile.mkdtemp(prefix="rf-fx-"), "db"))
+        ok, detail = (serve._fixed_acceptance(
+            f"http://127.0.0.1:{port}", "/notes", "text")
+            if port else (False, "spawn failed"))
+        if proc:
+            proc.terminate()
+        check("fixed acceptance passes against the real notes example",
+              ok, detail)
+
+        # an app whose update route is missing fails honestly at update
+        d = tempfile.mkdtemp(prefix="rf-fxfail-")
+        os.makedirs(os.path.join(d, "generated"))
+        import shutil as _sh
+        _sh.copytree(os.path.join(serve.FUSED_APP, "vendor"),
+                     os.path.join(d, "vendor"))
+        # a real peewee CRUD minus PUT: the spawn probe passes,
+        # the fixed acceptance must fail at the update step
+        with open(os.path.join(d, "generated", "app.py"), "w") as f:
+            f.write("""from microdot import Microdot
+from peewee import Model, SqliteDatabase, CharField
+
+db = SqliteDatabase(None)
+
+class Item(Model):
+    text = CharField()
+    class Meta:
+        database = db
+        table_name = "item"
+
+MODELS = [Item]
+app = Microdot()
+
+@app.get("/items")
+def l(request):
+    return [{"id": i.id, "text": i.text} for i in Item.select()]
+
+@app.post("/items")
+def c(request):
+    it = Item.create(text=(request.json or {}).get("text", ""))
+    return {"id": it.id, "text": it.text}, 201
+
+@app.get("/items/<int:iid>")
+def r(request, iid):
+    try:
+        it = Item.get_by_id(iid)
+        return {"id": it.id, "text": it.text}
+    except Exception:
+        return {"error": "not found"}, 404
+
+@app.delete("/items/<int:iid>")
+def dl(request, iid):
+    try:
+        it = Item.get_by_id(iid)
+    except Exception:
+        return {"error": "not found"}, 404
+    it.delete_instance()
+    return None, 204
+""")
+        proc, port = serve._spawn_owned(
+            d, serve.BUILD_RUNNER, "/items", "text",
+            os.path.join(tempfile.mkdtemp(prefix="rf-fxf-"), "db"))
+        if port:
+            ok, detail = serve._fixed_acceptance(
+                f"http://127.0.0.1:{port}", "/items", "text")
+            proc.terminate()
+            check("app missing update fails fixed acceptance honestly",
+                  not ok and "update" in detail, detail)
+        else:
+            check("app missing update fails fixed acceptance honestly",
+                  False, "spawn/probe refused (fail-closed, but untested "
+                  "acceptance path)")
+
     print(f"\n{len(FAILURES)} failures")
     return 1 if FAILURES else 0
 

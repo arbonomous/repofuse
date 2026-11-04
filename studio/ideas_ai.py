@@ -108,9 +108,24 @@ class NotConfigured(RuntimeError):
 class Refused(RuntimeError):
     """A guard refused the paid path. spent=True means the one charged call
     already fired (disposition possibly unknown); it is never retried."""
-    def __init__(self, message, spent=False):
+    def __init__(self, message, spent=False, diag=None):
         super().__init__(message)
         self.spent = spent
+        self.diag = diag
+
+
+def _strip_controls(text, limit=600):
+    """Bounded provider diagnostic kept as DATA: control characters (incl.
+    newlines) collapsed so layouts and logs can't be broken."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(text))[:limit]
+
+
+def _render_safe(text, limit=600):
+    """Provider diagnostic safe for MESSAGE text that flows through client
+    innerHTML sinks: control-stripped and HTML-escaped."""
+    return (_strip_controls(text, limit).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
 
 
 def _repofuse():
@@ -241,6 +256,7 @@ def _write_rejected(state_dir, run_id, reason, spent, model=None,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "status": "rejected",
         "reason": str(reason),
+        "provider_diag": getattr(reason, "diag", None),
         "spent": spent,
         "model": model,
         "usage": usage,
@@ -321,8 +337,14 @@ def suggest_with_model(metas, run_id, state_dir=STATE_DIR):
                 reasoning_effort="minimal",
                 response_format=IDEA_SCHEMA)
         except model_api.ModelCallError as e:
-            raise Refused(f"the charged idea-suggest call failed: {e}",
-                          spent=True)
+            excerpt = getattr(e, "body_excerpt", None)
+            detail = (f" - provider said: {_render_safe(excerpt)}"
+                      if excerpt else "")
+            raise Refused(f"the charged idea-suggest call failed: {e}"
+                          f"{detail}",
+                          spent=True,
+                          diag=(_strip_controls(excerpt)
+                                if excerpt else None))
         # RETAIN THE RAW RESPONSE BEFORE ANY PARSING.
         with open(os.path.join(state_dir, f"raw-{run_id}.json"), "w") as f:
             json.dump(raw, f, indent=2)

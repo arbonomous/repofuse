@@ -56,8 +56,9 @@ GOOD_ARCH = json.dumps({"plan": {
     "fields": [{"name": "text", "type": "str"}],
     "routes": ["GET /notes", "POST /notes", "GET /notes/<id>",
                "PUT /notes/<id>", "DELETE /notes/<id>"],
-    "uses": {"microdot": ["Microdot", "Request"],
-             "peewee": ["Model", "CharField", "NotARealExport"]},
+    "uses": [{"repo": "microdot", "exports": ["Microdot", "Request"]},
+             {"repo": "peewee",
+              "exports": ["Model", "CharField", "NotARealExport"]}],
     "notes": "small notes api"}})
 
 GOOD_GLUE = json.dumps({"file": {"path": "generated/app.py", "content": (
@@ -454,5 +455,21 @@ if __name__ == "__main__":
             {k: v for k, v in globals().items()
              if k.startswith("t_")}.items()):
         check(name, fn)
+
+    # provider diagnostic: escaped in messages, raw as data, in records
+    def t_diag_escaped():
+        x = build_ai._render_safe('<script>alert(1)</script>\nbad & "q"')
+        assert "<script>" not in x and "&lt;script&gt;" in x \
+            and "\n" not in x, x
+    check("provider diag escaped for message text", t_diag_escaped)
+
+    def t_diag_recorded():
+        r = build_ai.Refused("m", spent=True, step="s", diag="<raw>\nbody")
+        d = tempfile.mkdtemp()
+        build_ai._write_rejected(d, "run-x", "build-architecture", r, True)
+        rec = json.load(open(os.path.join(
+            d, "rejected-build-architecture-run-x.json")))
+        assert rec["provider_diag"] == "<raw>\nbody"
+    check("provider diag preserved raw as record data", t_diag_recorded)
     print(f"\n{PASS} passed, {len(FAIL)} failed")
     sys.exit(1 if FAIL else 0)

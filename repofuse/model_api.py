@@ -76,6 +76,7 @@ def _post(url, payload, key, timeout):
         excerpt = ""
         try:
             excerpt = e.read(MAX_ERROR_BYTES).decode("utf-8", "replace")
+            excerpt = excerpt.replace(key, "[redacted]")  # defensive
         except Exception:
             pass
         raise ModelCallError(f"Model API HTTP {e.code}", status=e.code,

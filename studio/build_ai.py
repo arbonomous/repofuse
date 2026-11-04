@@ -90,10 +90,25 @@ class Refused(RuntimeError):
     """A guard refused the paid path. spent=True means the one charged call
     for that step already fired (disposition possibly unknown); it is never
     retried."""
-    def __init__(self, message, spent=False, step=None):
+    def __init__(self, message, spent=False, step=None, diag=None):
         super().__init__(message)
         self.spent = spent
         self.step = step
+        self.diag = diag
+
+
+def _strip_controls(text, limit=600):
+    """Bounded provider diagnostic kept as DATA: control characters (incl.
+    newlines) collapsed so layouts and logs can't be broken."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(text))[:limit]
+
+
+def _render_safe(text, limit=600):
+    """Provider diagnostic safe for MESSAGE text that flows through client
+    innerHTML sinks: control-stripped and HTML-escaped."""
+    return (_strip_controls(text, limit).replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
 
 
 def _repofuse():
@@ -138,7 +153,8 @@ def _write_rejected(state_dir, run_id, step, reason, spent, model=None,
     consumed ledger. spent is True/False; None means charge UNKNOWN."""
     rec = {
         "run_id": run_id, "step": step, "ts": _ts(), "status": "rejected",
-        "reason": str(reason), "spent": spent, "model": model,
+        "reason": str(reason),
+        "provider_diag": getattr(reason, "diag", None), "spent": spent, "model": model,
         "usage": usage, "measured_input_tokens": measured,
     }
     try:
@@ -185,8 +201,13 @@ ARCH_SCHEMA = _schema("build_architecture", {
                     "required": ["name", "type"],
                     "additionalProperties": False}},
                 "routes": {"type": "array", "items": {"type": "string"}},
-                "uses": {"type": "object", "additionalProperties": {
-                    "type": "array", "items": {"type": "string"}}},
+                "uses": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"repo": {"type": "string"},
+                                   "exports": {"type": "array",
+                                               "items": {"type": "string"}}},
+                    "required": ["repo", "exports"],
+                    "additionalProperties": False}},
                 "notes": {"type": "string"},
             },
             "required": ["app_name", "crud_prefix", "entity", "fields",
@@ -255,14 +276,21 @@ def _validate_arch(data, export_names):
                   and f.get("type") in FIELD_TYPES for f in fields)
           and isinstance(routes, list) and 1 <= len(routes) <= 8
           and all(isinstance(r, str) and len(r) <= 80 for r in routes)
-          and isinstance(uses, dict)
+          and isinstance(uses, list)
           and isinstance(notes, str) and len(notes) <= 400)
     if not ok:
         raise Refused("architecture plan fails the contract",
                       spent=True, step=STEPS[0])
     # Citation discipline, same as ideas: unverifiable exports are dropped.
     clean, dropped = {}, 0
-    for slug, xs in uses.items():
+    if not isinstance(uses, list):
+        uses = []
+        dropped += 1
+    for entry in uses:
+        if not isinstance(entry, dict):
+            dropped += 1
+            continue
+        slug, xs = entry.get("repo"), entry.get("exports")
         if not isinstance(slug, str) or not isinstance(xs, list):
             dropped += 1
             continue
@@ -366,7 +394,12 @@ def _messages(step, card, repos, extra=None):
         "top-level names app = Microdot(...), db = SqliteDatabase(None) "
         "and MODELS = [list of peewee models] (the runner initializes and "
         "binds them), and never call app.run, open, or any OS/process/"
-        "network module. Describe capabilities tentatively; make no "
+        "network module. Exact contract: POST <prefix> -> 201 with a "
+        "JSON object containing \"id\"; GET <prefix> -> 200 with a "
+        "JSON array; GET <prefix>/<id> -> 200 with a JSON object, "
+        "404 when missing; PUT <prefix>/<id> -> 200 with a JSON "
+        "object; DELETE <prefix>/<id> -> 204, after which reads "
+        "return 404. Describe capabilities tentatively; make no "
         "security guarantees."
     )
     if step == STEPS[0]:
@@ -474,8 +507,14 @@ def run_build_steps(metas, card, run_id, state_dir=STATE_DIR,
                         messages, max_tokens=env["max_output_tokens"],
                         reasoning_effort="minimal", response_format=schema)
                 except model_api.ModelCallError as e:
-                    raise Refused(f"the charged {step} call failed: {e}",
-                                  spent=True, step=step)
+                    excerpt = getattr(e, "body_excerpt", None)
+                    detail = (f" - provider said: {_render_safe(excerpt)}"
+                              if excerpt else "")
+                    raise Refused(
+                        f"the charged {step} call failed: {e}{detail}",
+                        spent=True, step=step,
+                        diag=(_strip_controls(excerpt)
+                              if excerpt else None))
                 with open(os.path.join(
                         state_dir, f"raw-{step}-{run_id}.json"), "w") as f:
                     json.dump(raw, f, indent=2)
