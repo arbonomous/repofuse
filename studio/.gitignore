@@ -3,3 +3,6 @@ runs/
 paid-ideas/
 envelope.ideas.json
 __pycache__/
+paid-build/
+envelope.build.json
+build-approvals/*.json

@@ -29,7 +29,8 @@ button { font: inherit; cursor: pointer; }
   background: rgba(11,14,20,.85); backdrop-filter: blur(8px);
   position: sticky; top: 0; z-index: 30;
 }
-.brand { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
+.brand { font-size: 18px; font-weight: 700; letter-spacing: .3px; display: flex; align-items: center; gap: 8px; }
+.brand-logo { height: 24px; width: 24px; border-radius: 6px; }
 .brand-mark { color: var(--accent); }
 .brand-sub { color: var(--dim); font-weight: 400; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
@@ -232,6 +233,7 @@ body.freeze .screen.active { animation: none; }
 
 .field-opt { color: var(--dim); font-weight: 400; text-transform: none; letter-spacing: 0; }
 #ideas-cards { display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow-y: auto; }
+.hidden { display: none !important; }
 #ideas-cards.hidden { display: none; }
 .idea-head { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-bottom: 2px; }
 .idea-card { border: 1px solid #223055; border-radius: 10px; padding: 12px 14px; background: #111830; cursor: pointer; transition: border-color .15s, transform .15s; text-align: left; }

@@ -252,9 +252,32 @@
     }
     $("#ideas-cards").classList.add("hidden");
     $("#code-view").classList.remove("hidden");
-    setStage("architecture", "blocked", "needs model grant");
-    verdict(`'${card.title}' needs AI generation - disabled in this demo (no grant, no key). ` +
-            `The recorded-run replay shows the full pipeline for the pinned microdot + peewee pair.`, "fail");
+    startBuild(card);
+  }
+
+  function startBuild(card) {
+    if (!lastRunId) return;
+    setStage("architecture", "running");
+    log(`Building <span class="hl">${card.title}</span> - the repos get re-pinned at the exact commits from this run; each model stage is honestly gated.`);
+    fetch("/api/build", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: lastRunId, card }),
+    }).then(r => r.json()).then(resp => {
+      if (resp.error) { verdict(resp.error, "fail"); return; }
+      pollLive(lastRunId, liveSeen);
+    }).catch(e => verdict(`build request failed honestly: ${e}`, "fail"));
+  }
+
+  function resumeBuild(runId) {
+    setStage("verify", "running", "re-hash + acceptance");
+    log(`Resuming <span class="hl">${runId}</span> - <span class="hl">no generation</span>: the retained bytes are re-hashed against the review manifest, then the reviewed acceptance tests run.`);
+    fetch("/api/build/resume", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    }).then(r => r.json()).then(resp => {
+      if (resp.error) { verdict(`resume refused honestly: ${resp.error}`, "fail"); setStage("verify", "blocked", "awaiting source review"); return; }
+      pollLive(runId, liveSeen);
+    }).catch(e => verdict(`resume request failed honestly: ${e}`, "fail"));
   }
 
   /* ================= LIVE MODE (real free stages) ================= */
@@ -264,6 +287,7 @@
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo_a: repoA, repo_b: repoB, intent }),
     }).then(r => r.json());
+    lastRunId = resp.run_id; liveSeen = 0;
     setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
     show("#screen-build");
     buildRail([
@@ -287,8 +311,10 @@
     await pollLive(resp.run_id);
   }
 
-  async function pollLive(runId) {
-    let seen = 0;
+  let lastRunId = null;
+  let liveSeen = 0;
+  async function pollLive(runId, startSeen = 0) {
+    let seen = startSeen;
     const repoLive = [];
     for (;;) {
       const snap = await fetch("/api/run/" + runId).then(r => r.json());
@@ -297,9 +323,18 @@
         if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${ev.text}`); verdict(ev.text, "fail"); }
         else if (ev.kind === "blocked") {
           setStage("architecture", "blocked", "needs model grant");
-          verdict(`STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
+          const pa = ev.data && ev.data.paid_attempt;
+          verdict(pa && pa.spent === true
+            ? `STOPPED - 1 paid call was made and rejected (never retried)`
+            : pa && pa.spent === null
+              ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
+              : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
           log(ev.text);
-          tokenMeter(`paid stages: <b>disabled</b> &middot; 0 model calls made &middot; 0 keys used`);
+          tokenMeter(pa && pa.spent === true
+            ? `paid stages: <b>1 model call made</b> &middot; its output rejected, nothing retried`
+            : pa && pa.spent === null
+              ? `paid stages: call state <b>UNKNOWN</b> &middot; check the retained record`
+              : `paid stages: <b>disabled</b> &middot; 0 model calls made &middot; 0 keys used`);
         }
         else {
           log(ev.text.replace(/(pinned at \w+|license \S+|exports,?)/g, '<span class="hl">$1</span>'));
@@ -325,6 +360,35 @@
         }
         if (ev.kind === "stage_done" && ev.stage === "analyze")
           setStage("analyze", "done", "exports mapped");
+        if (ev.kind === "review") {
+          setStage("architecture", "done", "plan accepted");
+          setStage("glue", "done", "generated + linted");
+          setStage("tests", "done", "generated + linted");
+          setStage("verify", "blocked", "awaiting source review");
+          setBadge("LIVE &middot; generated + pinned &middot; nothing executed", "live");
+          verdict("PINNED FOR REVIEW - nothing executed; an independent reviewer must approve these exact bytes first", "fail");
+          log(ev.text);
+          if (ev.data && ev.data.files)
+            typeCode("review", ["sha256"],
+                     Object.entries(ev.data.files).map(([k, v]) => `${k}\n  ${v}`).join("\n"), 4000);
+          if (!document.getElementById("resume-btn")) {
+            const rb = document.createElement("button");
+            rb.id = "resume-btn"; rb.className = "ghost-btn";
+            rb.textContent = "Review approved? Resume build (no generation)";
+            rb.onclick = () => resumeBuild(runId);
+            logEl.appendChild(rb);
+          }
+        }
+        if (ev.stage === "build" && ev.kind === "ready" && ev.data && ev.data.prefix) {
+          setStage("architecture", "done", "plan accepted");
+          setStage("glue", "done", "generated + gated");
+          setStage("tests", "done", "generated + gated");
+          setStage("verify", "done", "acceptance passed");
+          setBadge("LIVE &middot; real build &middot; probe-verified", "live");
+          verdict(`BUILD VERIFIED - ${ev.data.app_name} (unedited generated output)`, "pass");
+          log(ev.text);
+          initBuildApp(runId, ev.data);
+        }
         if (ev.kind === "ideas" && ev.data && ev.data.cards) {
           setStage("architecture", "pending", "pick an idea below");
           renderIdeaCards(ev.data.cards, snap.recorded_pair,
@@ -346,7 +410,7 @@
                 : `ideas from <b>local analysis</b> &middot; 0 model calls made`));
         }
       }
-      if (snap.status !== "running") break;
+      if (snap.status !== "running" && snap.status !== "resuming") { liveSeen = seen; break; }
       await new Promise(r => setTimeout(r, 500));
     }
   }
@@ -480,7 +544,44 @@
     return { ok: resp.ok, status: resp.status, data };
   }
   let notesReal = false;
+  let appBase = "/notes", appField = "text", appEntity = "note";
+  async function initBuildApp(runId, d) {
+    $("#verdict-journey").innerHTML = `
+      <div class="journey-card"><span class="j-badge pass">VERIFIED</span>
+        <h3>${d.app_name}</h3>
+        <p>Freshly generated from your selected idea and verified against its
+        unedited output. The app below IS this build - spawned and
+        probe-verified just now, not the recorded example.</p></div>`;
+    show("#screen-result");
+    appBase = `/build/${runId}${d.prefix}`; appField = d.field;
+    appEntity = d.entity || "item";
+    $("#result-app-title").textContent = `${d.app_name} - interactive preview`;
+    $("#note-text").placeholder = `New ${appEntity}\u2026`;
+    $("#note-add").textContent = `Add ${appEntity}`;
+    $("#run-real-card").classList.add("hidden");  // replay-only rail
+    const badge = $("#notes-backend-badge");
+    const res = await api(appBase, "GET");
+    if (res.ok) {
+      notesReal = true;
+      badge.textContent = "REAL freshly-built app running locally \u00b7 spawned + probe-verified";
+      badge.className = "sim-badge real";
+      $("#preview-truth").textContent =
+        `Every action below hits the freshly built app over HTTP (${d.prefix}) with its own real SQLite store.`;
+    } else {
+      notesReal = false;
+      badge.textContent = "build backend unavailable";
+      badge.className = "sim-badge";
+      $("#preview-truth").textContent =
+        "The verified build backend is not reachable; the server spawns it on demand.";
+    }
+    await refreshNotes();
+  }
   async function initRealNotes() {
+    appBase = "/notes"; appField = "text"; appEntity = "note";
+    $("#result-app-title").textContent = "Notes app - interactive preview";
+    $("#note-text").placeholder = "Write a note\u2026";
+    $("#note-add").textContent = "Save note";
+    $("#run-real-card").classList.remove("hidden");
     const health = await fetch("/api/notes-health").then(r => r.json()).catch(() => null);
     const badge = $("#notes-backend-badge");
     if (health && health.available) {
@@ -502,9 +603,9 @@
   async function refreshNotes() {
     const list = $("#notes-list");
     if (!notesReal) { list.innerHTML = `<div class="notes-empty">Backend offline.</div>`; return; }
-    const res = await api("/notes", "GET");
+    const res = await api(appBase, "GET");
     const notes = (res.data || []);
-    list.innerHTML = notes.length ? "" : `<div class="notes-empty">No notes yet - add one above.</div>`;
+    list.innerHTML = notes.length ? "" : `<div class="notes-empty">Nothing here yet - add a ${appEntity} above.</div>`;
     notes.forEach(n => {
       const row = document.createElement("div");
       row.className = "note-row";
@@ -512,8 +613,8 @@
         <span class="note-body"></span>
         <button data-act="edit">Edit</button>
         <button data-act="del">Delete</button>`;
-      row.querySelector(".note-body").textContent = n.text;
-      row.querySelector('[data-act="del"]').onclick = async () => { await api(`/notes/${n.id}`, "DELETE"); refreshNotes(); };
+      row.querySelector(".note-body").textContent = n[appField];
+      row.querySelector('[data-act="del"]').onclick = async () => { await api(`${appBase}/${n.id}`, "DELETE"); refreshNotes(); };
       row.querySelector('[data-act="edit"]').onclick = () => {
         const body = row.querySelector(".note-body");
         const inp = document.createElement("input");
@@ -521,7 +622,7 @@
         body.replaceWith(inp); inp.focus();
         inp.onkeydown = async (ev) => {
           if (ev.key === "Enter" && inp.value.trim()) {
-            await api(`/notes/${n.id}`, "PUT", { text: inp.value.trim() });
+            await api(`${appBase}/${n.id}`, "PUT", { [appField]: inp.value.trim() });
             refreshNotes();
           }
         };
@@ -532,7 +633,7 @@
   $("#note-add").onclick = async () => {
     const t = $("#note-text").value.trim();
     if (!t || !notesReal) return;
-    await api("/notes", "POST", { text: t });
+    await api(appBase, "POST", { [appField]: t });
     $("#note-text").value = "";
     refreshNotes();
   };
@@ -667,5 +768,8 @@
       }
     })();
   }
+  // Test seam: a browser driver runs the SAME event loop a real session
+  // would - no alternate rendering path, no synthetic state.
+  window.__rf = { pollLive };
   if (qs.get("autostart") && !FREEZE) runReplay();
 })();

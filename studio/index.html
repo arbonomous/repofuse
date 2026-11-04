@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" type="image/png" href="/assets/repofuse-icon-clean.png">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RepoFuse Studio</title>
@@ -9,7 +10,7 @@
 <body>
 
 <header id="topbar">
-  <div class="brand"><span class="brand-mark">&#9670;</span> RepoFuse <span class="brand-sub">Studio</span></div>
+  <div class="brand"><img class="brand-logo" src="/assets/repofuse-icon-clean.png" alt="RepoFuse logo"> RepoFuse <span class="brand-sub">Studio</span></div>
   <div class="topbar-right">
     <span class="replay-badge local" id="replay-badge" title="Runs locally; no model calls are made">
       <span class="dot"></span> LOCAL DEMO &middot; no model calls
@@ -67,7 +68,7 @@
   <div class="result-grid">
     <div class="app-preview-card">
       <div class="app-preview-head">
-        <h2>Notes app - interactive preview</h2>
+        <h2 id="result-app-title">Notes app - interactive preview</h2>
         <span class="sim-badge" id="notes-backend-badge">checking backend&hellip;</span>
       </div>
       <p class="preview-truth" id="preview-truth"></p>
@@ -79,7 +80,7 @@
         <div id="notes-list"></div>
       </div>
     </div>
-    <div class="run-real-card">
+    <div class="run-real-card" id="run-real-card">
       <h2>Run the real thing</h2>
       <pre class="run-snippet"><code>git clone &lt;private repo&gt;  # arbonomous/repofuse
 cd examples/notes-app-fusion/fused_app

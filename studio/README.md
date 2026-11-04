@@ -3,6 +3,53 @@
 A local demo UI for RepoFuse: paste two GitHub repos, describe what you want,
 and watch the fusion build unfold. Two modes, both honest about what they are.
 
+## Building a selected idea (the build path)
+
+Clicking an idea card starts a real build run: both repos are re-pinned at
+the exact commits from the ideas run and re-analyzed (free stages, real),
+then three paid synthesis steps - architecture, glue, tests - each gated
+exactly like the ideas path (fail-closed envelope.build.json + key,
+per-step ONE count-check + ONE charged call ever, durable ledger in
+studio/paid-build/, raw retained BEFORE parsing, rejected or indeterminate
+attempts recorded durably with their spend state). Generated code is
+statically linted (AST) as an accident filter only - NOT a security
+boundary: introspection and the vendored dependencies can reach OS,
+file and network facilities, and child processes run as the same OS
+user, so no path or network denial is claimed from it. The real
+boundary is REVIEW: generated code NEVER executes automatically - not
+even its own acceptance tests. A build writes its output and STOPS at "awaiting
+review": every file the run would execute - generated app,
+acceptance tests AND the vendored pinned dependencies - is
+pinned by sha256, and the artifacts plus a machine-readable
+review request are retained under runs/<id>-build/. Execution
+happens only after an independent reviewer approves those exact bytes
+via a manifest the build pipeline cannot write (studio/build-
+approvals/<run>.json), and the server re-hashes the files at spawn
+time, refusing on any mismatch. Approved bytes then run as ordinary
+reviewed code under a least-privilege child environment (allowlist
+env - the server's own environment, including any model key, is never
+inherited - throwaway HOME, cwd in the build dir, 60s acceptance-test
+timeout) and are spawned for use on a random loopback port behind a
+create/read/delete ownership probe, proxied at
+/build/<run-id>/<prefix>. Unregistered, failed or tampered builds
+never execute. Residual, stated honestly: approved code has the
+normal capabilities of any reviewed app in this repo - it runs as the
+same OS user and can read what that user can read; review is the
+control, and on the Mac nothing generated runs at all.
+
+Where builds run (the security split):
+- Assistant-hosted qualification: freshly generated, still-unreviewed code
+  executes ONLY in the disposable assistant sandbox - never on your Mac.
+- Your Mac (`git pull` + studio/run.sh): the free stages, the reviewed
+  example app, and any build output that has been reviewed and committed.
+  Fresh unreviewed generated code is not executed on the Mac.
+- The model key stays assistant-hosted in the vault; the Mac never needs
+  it for free stages or for running reviewed builds.
+
+First end-to-end build qualification (needs its own fresh specific grant):
+3 model calls (architecture, glue, tests) for a selected idea, then the
+free verify stage, then open the app and save/edit/delete a row for real.
+
 ## Run it (one command, from anywhere)
 
     studio/run.sh
