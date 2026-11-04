@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 
 _EXT_LANG = {
     ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript",
@@ -57,13 +59,53 @@ _GIT_ENV = {
 }
 
 
+# Helper for the portable bounded path: a tiny single-threaded process that
+# applies the SAME limits via the POSIX stdlib resource module, then execs
+# git. Works on Linux and macOS; bounds apply DURING the clone, not after.
+_RLIMIT_HELPER = (
+    "import json,os,resource,sys\n"
+    "spec=json.loads(sys.argv[1])\n"
+    "for name,val in spec['limits'].items():\n"
+    "    resource.setrlimit(getattr(resource,name),(val,val))\n"
+    "os.execvpe('git',['git']+spec['args'],spec['env'])\n"
+)
+
+_PRLIMIT_TO_RLIMIT = {"--fsize": "RLIMIT_FSIZE", "--cpu": "RLIMIT_CPU",
+                      "--as": "RLIMIT_AS"}
+
+
 def _git(args, cwd=None, rlimits=None):
     env = dict(_GIT_ENV)
-    cmd = ["git"] + args
-    if rlimits:
-        cmd = ["prlimit"] + rlimits + ["--"] + cmd
-    return subprocess.run(cmd, cwd=cwd, env=env,
-                          capture_output=True, text=True, timeout=300)
+    if not rlimits:
+        return subprocess.run(["git"] + args, cwd=cwd, env=env,
+                              capture_output=True, text=True, timeout=300)
+    if shutil.which("prlimit", path=env["PATH"]):
+        cmd = ["prlimit"] + rlimits + ["--", "git"] + args
+        return subprocess.run(cmd, cwd=cwd, env=env,
+                              capture_output=True, text=True, timeout=300)
+    # No prlimit (e.g. macOS): use the portable POSIX resource module via a
+    # helper process (single-threaded, so no preexec_fn fork-in-threads
+    # hazard). Never silently drop the bounds - if this platform has no
+    # resource module either, refuse the clone (fail closed). Limits are
+    # per-file size / CPU / address space, not an aggregate disk cap; note
+    # RLIMIT_AS is advisory-only on macOS (kernel ignores it), FSIZE and
+    # CPU are enforced there (SIGXFSZ / SIGXCPU).
+    try:
+        import resource  # noqa: F401  (POSIX stdlib; present on macOS too)
+    except ImportError:
+        return subprocess.CompletedProcess(
+            args=["git"] + args, returncode=126,
+            stdout="", stderr="refused: no prlimit and no POSIX resource "
+                              "module; cannot bound the clone on this "
+                              "platform")
+    limits = {}
+    for r in rlimits:
+        k, _, v = r.partition("=")
+        limits[_PRLIMIT_TO_RLIMIT[k]] = int(v)
+    spec = json.dumps({"args": args, "env": env, "limits": limits})
+    return subprocess.run([sys.executable, "-c", _RLIMIT_HELPER, spec],
+                          cwd=cwd, capture_output=True, text=True,
+                          timeout=300)
 
 
 def _dir_size(path):
@@ -103,7 +145,8 @@ def clone_repo(url, dest):
     # --no-recurse-submodules: submodule content is never fetched/executed
     # filter=blob:none keeps clones small; hooks disabled via _GIT_ENV
     # protocols: https + local file only (no ssh/git); credential helpers off
-    # prlimit during clone: disk/CPU/mem caps apply DURING download, not after
+    # rlimits during clone: per-file size / CPU / address-space caps apply
+    # DURING download, not after (per-file, not an aggregate disk cap)
     res = _git(["-c", "core.hooksPath=/dev/null",
                 "-c", "credential.helper=",
                 "-c", "protocol.ssh.allow=never",
