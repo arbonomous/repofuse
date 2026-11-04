@@ -1553,9 +1553,41 @@ def proxy_build(handler, run_id, rest):
 
 APP_PATH = re.compile(r"^/app/(run-[0-9a-f]{16})(/[A-Za-z0-9_/.-]{0,120})?$")
 _general_builds = {}
+_general_spawn_lock = threading.Lock()
 
 
 def _spawn_general(fusion_dir, contract):
+    """Keep the creating thread alive for the full contained child lifetime.
+    Linux parent-death signals bind to the spawning THREAD, not merely
+    its process. An HTTP worker must not own bwrap: it exits on response.
+    The daemon owner waits for its exact child; process death still tears
+    down all threads and triggers the unchanged parent-death chain.
+    """
+    import queue
+    ready = queue.Queue(maxsize=1)
+
+    def own():
+        try:
+            result = _spawn_general_owned(fusion_dir, contract)
+        except Exception as e:
+            ready.put((None, None, None, f"contained spawn failed: {e}"))
+            return
+        proc, port, lsock, why = result
+        ready.put(result)
+        if proc is not None:
+            try:
+                proc.wait()
+            finally:
+                # No stale parent listener after unexpected child death.
+                if lsock is not None:
+                    lsock.close()
+
+    threading.Thread(target=own, daemon=True,
+                     name="repofuse-contained-owner").start()
+    return ready.get()
+
+
+def _spawn_general_owned(fusion_dir, contract):
     """Spawn a general fused app under its REVIEWED serving contract,
     INSIDE runtime containment (bubblewrap): read-only tree mount,
     cleared env with only scrubbed values, private PID/IPC/UTS
@@ -1582,11 +1614,15 @@ def _spawn_general(fusion_dir, contract):
             lsock.close()
             continue
         port = lsock.getsockname()[1]
-        proc = subprocess.Popen(
-            serving_mod.build_serve_cmd(fusion_dir, contract,
-                                        lsock.fileno(), sys.executable),
-            pass_fds=[lsock.fileno()],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc = subprocess.Popen(
+                serving_mod.build_serve_cmd(fusion_dir, contract,
+                                            lsock.fileno(), sys.executable),
+                pass_fds=[lsock.fileno()],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            lsock.close()
+            raise
         ok = False
         for _ in range(40):
             if proc.poll() is not None:
@@ -1607,6 +1643,11 @@ def _spawn_general(fusion_dir, contract):
         if ok:
             return proc, port, lsock, None
         proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
         lsock.close()
     return None, None, None, ("the reviewed app did not start and answer "
                               "its contract readiness probe")
@@ -1626,8 +1667,11 @@ def stop_general_backend(run_id):
         proc.terminate()
         try:
             proc.wait(timeout=3)
-        except Exception:
+        except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=3)
+    elif proc:
+        proc.wait()  # reap an already-exited child too
     sock = b.get("sock")
     if sock:
         try:
@@ -1646,6 +1690,12 @@ atexit.register(_cleanup_general_backends)
 
 
 def ensure_general_backend(run_id):
+    # Serialize check-and-spawn, including concurrent requests for one run.
+    with _general_spawn_lock:
+        return _ensure_general_backend_locked(run_id)
+
+
+def _ensure_general_backend_locked(run_id):
     """Serve a GENERAL fused app only when every execution gate passes
     right now: run is build_verified; the safety gate (reviewer sign-off
     on warn) still holds; the whole-tree attestation - which also pins
@@ -1667,6 +1717,10 @@ def ensure_general_backend(run_id):
         if b and b.get("proc") and b["proc"].poll() is None \
                 and b.get("port"):
             return b["port"], None
+        if b:
+            stale = _general_builds.pop(run_id)
+            if stale.get("sock"):
+                stale["sock"].close()
     fusion_root = os.path.join(RUNS, f"{run_id}-fusion")
     fusion_dir = os.path.join(fusion_root, "fused_app")
     ok, why, _ = gluereview_mod.check_attestation(
@@ -1940,8 +1994,12 @@ class Handler(BaseHTTPRequestHandler):
         if not port:
             code = 404 if why == "unknown run" else 409
             return self._json(code, {"error": why})
+        # Open the parent-owned loopback origin directly. WSGI apps may
+        # use absolute local routes and redirects; prefix proxying would
+        # silently break those and lose query strings. The contained app
+        # owns no network socket and this origin is never public.
         return self._json(200, {"run_id": run_id,
-                                "url": f"/app/{run_id}/"})
+                                "url": f"http://127.0.0.1:{port}/"})
 
     def _build_general_stop(self):
         """Stop serving a general build. Stopping executes nothing; it

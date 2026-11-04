@@ -388,3 +388,73 @@ def test_generation_to_contract_to_contained_serving(tmp_path,
             assert r.read() == b"reviewed-fixture-ok"
     finally:
         _stop(run["run_id"])
+
+
+@pytest.mark.skipif(not serving.containment_available(), reason="bwrap unavailable")
+def test_http_owner_survives_request_thread_exit(tmp_path, monkeypatch):
+    import re
+    import threading
+    import time
+    from http.server import ThreadingHTTPServer
+    run, _ = _attested_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(serve, "RUN_ID", re.compile(r"^run-gen-serve00$"))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+    monkeypatch.setattr(serve, "LOCAL_HOSTS", {f"127.0.0.1:{httpd.server_port}"})
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    port = None
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_port}/api/build-general/serve",
+            data=json.dumps({"run_id": run["run_id"]}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200
+            opened = json.load(response)["url"]
+        # The UI consumes exactly this URL; it must be the OWNED local
+        # origin, not a prefix proxy that breaks absolute app routes.
+        backend = serve._general_builds[run["run_id"]]
+        assert opened == f"http://127.0.0.1:{backend['port']}/"
+        with urllib.request.urlopen(opened, timeout=3) as response:
+            assert response.read() == b"reviewed-fixture-ok"
+        # urllib closes the first response/connection (HTTP/1.0 server).
+        # The next request below opens a NEW connection after worker exit.
+        time.sleep(.2)
+        backend = serve._general_builds[run["run_id"]]
+        port = backend["port"]
+        assert backend["proc"].poll() is None
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as r:
+            assert r.read() == b"reviewed-fixture-ok"
+        # Unexpected death must close the parent-owned listener too.
+        backend["proc"].kill()
+        backend["proc"].wait(timeout=3)
+        for _ in range(30):
+            if backend["sock"].fileno() == -1:
+                break
+            time.sleep(.01)
+        assert backend["sock"].fileno() == -1
+    finally:
+        _stop(run["run_id"])
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
+@pytest.mark.skipif(not serving.containment_available(), reason="bwrap unavailable")
+def test_concurrent_ensure_single_spawn_and_stop_reaps(tmp_path, monkeypatch):
+    import concurrent.futures
+    run, _ = _attested_run(tmp_path, monkeypatch)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: serve.ensure_general_backend(run["run_id"]), range(4)))
+        assert len({r[0] for r in results}) == 1
+        assert results[0][0], results
+        backend = serve._general_builds[run["run_id"]]
+        proc, sock = backend["proc"], backend["sock"]
+        assert serve.stop_general_backend(run["run_id"])
+        assert proc.poll() is not None
+        assert sock.fileno() == -1
+        with pytest.raises(ChildProcessError):
+            os.waitpid(proc.pid, os.WNOHANG)
+    finally:
+        _stop(run["run_id"])
