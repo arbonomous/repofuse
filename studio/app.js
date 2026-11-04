@@ -554,7 +554,7 @@
     $("#verdict-journey").innerHTML = `
       <div class="journey-card"><span class="j-badge pass">VERIFIED</span>
         <h3>${d.app_name}</h3>
-        <p>Freshly generated from ${buildInputDesc || "the input card selected for this run"}
+        <p>Generated from ${buildInputDesc || "the input card selected for this run"}
         and verified against its unedited output. The app below IS this
         build - spawned and probe-verified just now, not the recorded
         example.</p><p id="model-tests-note"></p></div>`;
@@ -574,10 +574,10 @@
     const res = await api(appBase, "GET");
     if (res.ok) {
       notesReal = true;
-      badge.textContent = "REAL freshly-built app running locally \u00b7 spawned + probe-verified";
+      badge.textContent = "REAL AI-built app running locally \u00b7 spawned + probe-verified";
       badge.className = "sim-badge real";
       $("#preview-truth").textContent =
-        `Every action below hits the freshly built app over HTTP (${d.prefix}) with its own real SQLite store.`;
+        `Every action below hits this reviewed build over HTTP (${d.prefix}) with its own real SQLite store.`;
     } else {
       notesReal = false;
       badge.textContent = "build backend unavailable";
@@ -675,6 +675,56 @@
       : "Replay exists only for the RECORDED NOTES API build (pinned microdot + peewee, 2026-11-04). Your inputs run the real free stages instead.";
   }));
   replayBtn.disabled = false; // default inputs match
+
+  /* -------- saved reviewed builds present on this machine -------- */
+  (async () => {
+    let builds = [];
+    try {
+      const r = await fetch("/api/builds/local").then(r => r.json());
+      builds = r.builds || [];
+    } catch (e) { return; }  // older server or offline - no card
+    if (!builds.length) return;
+    const card = document.createElement("div");
+    card.className = "setup-note";
+    card.style.borderTop = "1px solid rgba(255,255,255,.08)";
+    card.style.paddingTop = "12px";
+    // No innerHTML for server-supplied values: buttons and the note are
+    // built with textContent, and the run id travels via closure only.
+    builds.forEach(b => {
+      const btn = document.createElement("button");
+      btn.className = "replay-btn open-saved";
+      btn.textContent = `Open the saved reviewed AI-built ${b.app_name}`;
+      btn.onclick = () => {
+        const runId = b.run_id;
+        lastRunId = runId; liveSeen = 0;
+        setBadge("LIVE &middot; saved reviewed build &middot; 0 model calls", "live");
+        show("#screen-build");
+        buildRail([
+          { id: "ingest", label: "Ingest (real)" },
+          { id: "analyze", label: "Analyze (real)" },
+          { id: "architecture", label: "Architecture" },
+          { id: "glue", label: "Glue synthesis" },
+          { id: "tests", label: "Test synthesis" },
+          { id: "verify", label: "Verify" },
+        ]);
+        logEl.innerHTML = "";
+        log(`Opening the <span class="hl">saved reviewed AI-built app</span> ` +
+            `- no generation: bytes are re-hashed against the ` +
+            `review manifest, then the fixed acceptance re-runs.`);
+        resumeBuild(runId);
+      };
+      card.appendChild(btn);
+    });
+    const note = document.createElement("p");
+    note.className = "setup-note";
+    note.textContent = "A real app the AI pipeline built on 2026-11-04 " +
+      "from a locally-generated analysis card. Every byte was hash-reviewed " +
+      "before it ever ran, and this machine re-verified every byte on import. " +
+      "Its model-written test script fails (retained unedited) - the " +
+      "independent CRUD acceptance is what passed. Runs fully locally.";
+    card.appendChild(note);
+    $("#replay-hint").after(card);
+  })();
 
   /* ---------------- freeze states (deterministic screenshots) ---------------- */
   if (FREEZE && FREEZE !== "setup") {

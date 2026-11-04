@@ -1095,6 +1095,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_local():
             return self._refuse()
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/builds/local":
+            # Saved reviewed builds present on THIS machine (e.g. imported
+            # via studio/import_build.py). Fail-closed: only runs whose
+            # persisted record re-validates as build_ready are listed.
+            out = []
+            try:
+                names = sorted(os.listdir(RUNS))
+            except OSError:
+                names = []
+            for name in names:
+                if not name.endswith("-build"):
+                    continue
+                st = _load_build_state(name[:-len("-build")])
+                if st and st.get("status") == "build_ready":
+                    out.append({"run_id": st["run_id"],
+                                "app_name": st["meta"]["app_name"],
+                                "entity": st["meta"]["entity"]})
+            return self._json(200, {"builds": out})
         if path == "/api/notes-health":
             port = ensure_notes_backend()
             return self._json(200, {
