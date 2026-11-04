@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repofuse"
-version = "0.6.5"
+version = "0.6.9"
 description = "Autonomous multi-repository synthesis engine prototype (Meta Model API)"
 requires-python = ">=3.9"
 dependencies = []

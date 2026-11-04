@@ -60,6 +60,70 @@ ARCH_MAX_RISKS = 6
 ARCH_MAX_STR = 160
 ARCH_OUTPUT_CHAR_BUDGET = 6000
 
+# Documented request controls (dev.meta.ai/docs/reasoning,
+# /docs/structured-output). "minimal" is chosen because the 2026-11-04
+# failure burned 3,423 of 4,096 completion tokens on reasoning; lowering
+# effort leaves headroom for visible output. This is NOT a guarantee of
+# fit, quality, or a lower bill - real model behavior under these
+# controls is unproven until a live run.
+PIPELINE_REASONING_EFFORT = "minimal"
+
+# Schema-constrained decoding for the architecture manifest (fixed keys),
+# per the provider's structured-output docs. The maxItems/maxLength
+# keywords are standard JSON Schema but provider ENFORCEMENT of these
+# specific keywords is unconfirmed in the docs; validate_architecture_size
+# remains the real local size backstop regardless.
+ARCH_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "source_exports": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": ARCH_MAX_STR},
+                "maxItems": ARCH_MAX_EXPORTS_PER_REPO,
+            },
+        },
+        "arbitrage_opportunity": {"type": "string", "maxLength": 400},
+        "required_shims": {"type": "array",
+                           "items": {"type": "string",
+                                     "maxLength": ARCH_MAX_STR},
+                           "maxItems": ARCH_MAX_SHIMS},
+        "bridge": {"type": "array",
+                   "items": {"type": "object",
+                             "properties": {
+                                 "from_repo": {"type": "string"},
+                                 "from_export": {"type": "string"},
+                                 "to_repo": {"type": "string"},
+                                 "to_route_or_input": {"type": "string"},
+                             },
+                             "required": ["from_repo", "from_export",
+                                          "to_repo", "to_route_or_input"]},
+                   "maxItems": ARCH_MAX_BRIDGE},
+        "risks": {"type": "array",
+                  "items": {"type": "string", "maxLength": ARCH_MAX_STR},
+                  "maxItems": ARCH_MAX_RISKS},
+    },
+    "required": ["source_exports", "arbitrage_opportunity",
+                 "required_shims", "bridge", "risks"],
+}
+
+TEST_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {"test_fused.py": {"type": "string"}},
+    "required": ["test_fused.py"],
+}
+
+# Glue maps arbitrary file names to contents, so no fixed schema exists;
+# json_object guarantees valid JSON only - it is NOT schema-constrained
+# and is never described as such.
+GLUE_RESPONSE_FORMAT = {"type": "json_object"}
+
+
+def _rf_json_schema(name, schema):
+    return {"type": "json_schema",
+            "json_schema": {"name": name, "schema": schema}}
+
 
 def build_architecture_prompt(manifest, metas):
     repos = [{"slug": m["slug"],
@@ -186,9 +250,15 @@ def _write_files(fusion_dir, files, model, ts, slot="glue"):
                 continue  # only the exact test slot
             dest_dir = root_real
         else:
-            # key must be exactly a clean file name - no directories,
-            # no normalization, no silent rewrite of odd keys
-            if (name != os.path.basename(rel) or "/" in name or "\\" in name
+            # The contract names the module generated/app.py, so models
+            # reasonably include the slot prefix; strip exactly one leading
+            # "generated/" and then require a clean bare name. All other
+            # defenses (no directories, no normalization, slot confinement)
+            # apply unchanged to the stripped name.
+            if name.startswith(_GLUE_DIR + "/"):
+                name = name[len(_GLUE_DIR) + 1:]
+            if (name != os.path.basename(name) or "/" in name
+                    or "\\" in name
                     or not _GENERATED_NAME.match(name)
                     or name in _GENERATED_SLOTS):
                 continue
@@ -241,7 +311,8 @@ def _retain_raw_response(out_dir, step, resp):
 
 
 def call_gated(step, messages, out_dir, budget, env=None,
-               max_tokens=RUN_ENVELOPE["max_output_tokens"]):
+               max_tokens=RUN_ENVELOPE["max_output_tokens"],
+               reasoning_effort=None, response_format=None):
     """Unified gated call: measure -> reserve -> call -> commit.
 
     The count preflight is an INDEPENDENT refusal gate (refuse when the
@@ -262,7 +333,9 @@ def call_gated(step, messages, out_dir, budget, env=None,
                              "charged call without measured input")
     budget.reserve(step, measured, max_tokens)
     resp = model_api.chat_completion(messages, max_tokens=max_tokens,
-                                     timeout=60, env=env)
+                                     timeout=60, env=env,
+                                     reasoning_effort=reasoning_effort,
+                                     response_format=response_format)
     actual = budget.commit(step, resp["usage"])
     telemetry.log_call(os.path.join(out_dir, "telemetry.jsonl"), step=step,
                        model=resp["model"], usage=resp["usage"],
@@ -346,8 +419,11 @@ def run_synthesis(manifest, metas, out_dir, env=None):
         result["steps"]["probe"] = probe
 
         arch_msgs = prompts["architecture-manifest"]
-        arch_resp, _ = call_gated("architecture-manifest", arch_msgs,
-                                  out_dir, budget, env=env)
+        arch_resp, _ = call_gated(
+            "architecture-manifest", arch_msgs, out_dir, budget, env=env,
+            reasoning_effort=PIPELINE_REASONING_EFFORT,
+            response_format=_rf_json_schema("architecture_manifest",
+                                            ARCH_JSON_SCHEMA))
         architecture = _extract_json(arch_resp["content"])
         validate_architecture_size(architecture)
         with open(os.path.join(out_dir, "architecture.json"), "w",
@@ -356,8 +432,10 @@ def run_synthesis(manifest, metas, out_dir, env=None):
         result["steps"]["architecture-manifest"] = "done"
 
         glue_msgs = build_glue_prompt(manifest, architecture)
-        glue_resp, _ = call_gated("glue-synthesis", glue_msgs,
-                                  out_dir, budget, env=env)
+        glue_resp, _ = call_gated(
+            "glue-synthesis", glue_msgs, out_dir, budget, env=env,
+            reasoning_effort=PIPELINE_REASONING_EFFORT,
+            response_format=GLUE_RESPONSE_FORMAT)
         glue_files = _extract_json(glue_resp["content"])
         written = _write_files(fusion_dir, glue_files, glue_resp["model"], ts,
                                slot="glue")
@@ -370,8 +448,11 @@ def run_synthesis(manifest, metas, out_dir, env=None):
             with open(full, encoding="utf-8", errors="replace") as f:
                 glue_contents[rel] = f.read()
         test_msgs = build_test_prompt(manifest, architecture, glue_contents)
-        test_resp, _ = call_gated("test-synthesis", test_msgs,
-                                  out_dir, budget, env=env)
+        test_resp, _ = call_gated(
+            "test-synthesis", test_msgs, out_dir, budget, env=env,
+            reasoning_effort=PIPELINE_REASONING_EFFORT,
+            response_format=_rf_json_schema("test_fused",
+                                            TEST_JSON_SCHEMA))
         test_files = _extract_json(test_resp["content"])
         written = _write_files(fusion_dir, test_files, test_resp["model"], ts,
                                slot="test")

@@ -34,11 +34,14 @@ separate future work.
    against a durable budget file (budget.json) BEFORE firing and commits
    measured usage after: per-call 12,000 measured input tokens,
    provider-enforced 4096 output tokens, 60s timeout, zero retries.
-   Aggregate envelope in source: 6 charged / 6 count / 60k input / 20,480
-   output tokens. The 6/6 totals are main's PROPOSED minimum top-up beyond
-   the originally approved 5+5 (the 2026-11-04 incident consumed 3 charged
-   + 3 count, leaving arch/glue/test); they are NOT active authority until
-   the user grants the top-up. Every provider count_tokens check is also
+   Aggregate envelope defaults in source: 6 charged / 6 count / 60k
+   input / 20,480 output tokens. The historical 2026-11-04 run is CLOSED:
+   it actually consumed 4 charged (2 committed probes, 1 interrupted
+   auto-heal with unknowable disposition, 1 committed arch truncated at
+   the cap) + 4 count and failed terminally at arch; its ledger is
+   preserved and never reset, renamed, or reused. Any future attempt is a
+   FRESH run under fresh user authority with a new ledger; these numbers
+   are defaults, not authority. Every provider count_tokens check is also
    recorded durably BEFORE it fires (count_calls ledger), closing the
    previously untracked count-check half of the envelope. One reservation
    per named step, ever: a step that already has any reservation -
@@ -92,6 +95,44 @@ supplementary evidence, never the verdict.
   bubblewrap the run reports static_only and stops.
 - The fused app is vendored inputs (sha256-pinned) + generated glue; nothing
   is claimed working unless the sandbox run observed the tests passing.
+
+## Documented request controls (0.6.6, offline only, UNPROVEN LIVE)
+
+Generation calls (arch/glue/test) send two documented Chat Completions
+controls, per dev.meta.ai/docs/reasoning and /docs/structured-output:
+- reasoning_effort="minimal": chosen because the 2026-11-04 failure
+  burned 3,423 of 4,096 completion tokens on reasoning at the
+  model-determined default; lower effort leaves headroom for visible
+  output. NOT a guarantee of fit, quality, or a lower bill.
+- response_format: arch and test use json_schema (schema-constrained
+  decoding per provider docs; the schemas carry maxItems/maxLength, but
+  provider enforcement of those specific keywords is UNCONFIRMED - the
+  local validate_architecture_size is the real size backstop); glue uses
+  json_object, which guarantees valid JSON ONLY and is never claimed to
+  be schema-constrained.
+The probe call is unchanged (no controls). Real model behavior and
+parameter compatibility under these controls is unproven until a future
+authorized live run; the local validators, truncation detection, and raw
+retention remain the backstops.
+
+## Proposed fresh-run envelope (INACTIVE config, NOT authority)
+
+repofuse/qualification/proposed_envelope.json describes ONE possible
+future fresh run: probe -> arch -> glue -> test, then STOP for full
+retained generated-corpus review before attestation/execution. 4 charged
++ 4 count, strictly enforced per step via a run-local envelope.json
+override that must exist, parse, and EXACTLY match the proposal's six
+numeric values - missing, malformed, partial, or wrong-cap config
+refuses before any provider traffic and never falls back to larger
+defaults. NO heal, NO retries. Worst-case list-price exposure
+(muse-spark-1.3 Standard, checked 2026-11-04): $0.1123 model-only
+(48,000 envelope-allowed input + 12,289 reachable output), loosest
+envelope-allowed estimate $0.1296; count-endpoint fees unknown (not
+assumed free, not estimated), no hard dollar cap exists, reasoning
+bills as output, no credit coverage is guaranteed. The staged
+driver gained a "probe" stage for fresh runs only (new out dir, new
+ledger); the historical run keeps its repaired probe state and routes
+TERMINAL. Activation requires fresh user authority - none exists.
 
 ## Offline validation without live calls
 

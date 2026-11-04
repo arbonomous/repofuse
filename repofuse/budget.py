@@ -13,15 +13,18 @@ import os
 import time
 
 RUN_ENVELOPE = {
-    # Original approved run: 5 charged + 5 count (2026-11-03, user grant).
-    # The incident run consumed 3 charged (2 committed probes + 1
-    # interrupted auto-heal reservation, unknown disposition) + 3 count.
-    # 6/6 below is main's PROPOSED minimum top-up (+1/+1, remaining
-    # capacity arch/glue/test, NO heal) - it is source-coherent only and
-    # NOT active authority: the run stays held until the user grants it.
+    # HISTORICAL, CLOSED: the 2026-11-04 run under its 6/6 envelope
+    # (original 5+5 grant + a +1/+1 top-up) actually consumed 4 charged
+    # (2 committed probes 14/1 each, 1 interrupted auto-heal reservation
+    # with unknowable disposition preserved as consumed, 1 committed
+    # architecture-manifest 4879/4096 truncated) + 4 count, then FAILED
+    # TERMINALLY at arch. That ledger is preserved and never reset,
+    # renamed, or reused; step names probe/auto-heal/architecture-manifest
+    # are burned in it. Any future attempt is a FRESH run under fresh
+    # user authority with a NEW budget ledger. These constants are
+    # defaults for a fresh run, not authority.
     "max_calls": 6,
     # provider count_tokens checks, tracked durably like charged calls.
-    # Set from the approved envelope (was 5; incident consumed 3).
     "max_count_calls": 6,
     "max_input_tokens": 12000,    # per call, provider-measured preflight
     "max_output_tokens": 4096,    # per call, provider-enforced max_tokens
@@ -35,8 +38,31 @@ class BudgetExceeded(RuntimeError):
 
 
 class Budget:
-    def __init__(self, path):
+    def __init__(self, path, envelope_path=None):
+        """If envelope_path names an existing JSON file, its keys override
+        RUN_ENVELOPE for THIS run's ledger only (a run-local envelope such
+        as qualification/proposed_envelope.json). The file is config, not
+        authority: it must be activated deliberately per run, and it never
+        touches any other ledger."""
         self.path = path
+        self.envelope = dict(RUN_ENVELOPE)
+        if envelope_path:
+            # fail closed: an explicit envelope file that is missing or
+            # malformed must NEVER silently fall back to larger defaults
+            if not os.path.exists(envelope_path):
+                raise BudgetExceeded(
+                    f"envelope file {envelope_path} missing; refusing "
+                    "rather than falling back to defaults")
+            try:
+                with open(envelope_path) as f:
+                    override = json.load(f)
+            except (OSError, ValueError) as e:
+                raise BudgetExceeded(
+                    f"envelope file {envelope_path} unreadable: {e}; "
+                    "refusing rather than falling back to defaults")
+            for k in self.envelope:
+                if k in override:
+                    self.envelope[k] = override[k]
         if os.path.exists(path):
             with open(path) as f:
                 self.state = json.load(f)
@@ -53,7 +79,7 @@ class Budget:
 
     def reserve(self, step, input_tokens, output_tokens):
         """Reserve before a charged call; raises BudgetExceeded."""
-        env = RUN_ENVELOPE
+        env = self.envelope
         # No-retries guard: one reservation per named step, EVER. An
         # interrupted reservation (actual=None) is consumed, not reusable,
         # so a re-run of an interrupted stage refuses instead of refiring
@@ -87,7 +113,7 @@ class Budget:
         """Durably record a provider count_tokens check BEFORE it fires,
         so the count-check half of the approved envelope is enforced by
         the same durable accounting as charged calls (previously untracked)."""
-        env = RUN_ENVELOPE
+        env = self.envelope
         counts = self.state.setdefault("count_calls", [])
         # Same one-per-step guard as reserve(), applied BEFORE the count
         # endpoint fires: without it, re-running an interrupted stage would

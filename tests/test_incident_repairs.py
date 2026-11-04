@@ -18,7 +18,9 @@ from repofuse import model_api
 from repofuse import synthesize as synth_mod
 from repofuse.budget import Budget, BudgetExceeded, RUN_ENVELOPE
 
-# The incident run's durable budget history (2026-11-04), preserved verbatim:
+# The incident run's ACTUAL preserved budget history (2026-11-04),
+# verbatim: 4 charged + 4 count consumed, closed with a terminal arch
+# failure. Never reset, renamed, or reused.
 INCIDENT_CALLS = [
     {"step": "probe", "reserved_input": 171, "reserved_output": 1,
      "actual": {"input": 14, "output": 1}, "ts": "2026-11-04T03:25:19Z"},
@@ -26,11 +28,17 @@ INCIDENT_CALLS = [
      "actual": None, "ts": "2026-11-04T03:25:22Z"},
     {"step": "probe", "reserved_input": 171, "reserved_output": 1,
      "actual": {"input": 14, "output": 1}, "ts": "2026-11-04T03:26:07Z"},
+    {"step": "architecture-manifest", "reserved_input": 5036,
+     "reserved_output": 4096,
+     "actual": {"input": 4879, "output": 4096},
+     "ts": "2026-11-04T03:40:11Z"},
 ]
 INCIDENT_COUNT_CALLS = [
     {"step": "probe", "ts": "2026-11-04T03:25:19Z", "backfilled": True},
     {"step": "auto-heal", "ts": "2026-11-04T03:25:22Z", "backfilled": True},
     {"step": "probe", "ts": "2026-11-04T03:26:07Z", "backfilled": True},
+    {"step": "architecture-manifest", "ts": "2026-11-04T03:40:11Z",
+     "backfilled": True},
 ]
 
 
@@ -45,8 +53,8 @@ def make_budget(tmp, state=None):
 def incident_state():
     return {"calls": [dict(c) for c in INCIDENT_CALLS],
             "count_calls": [dict(c) for c in INCIDENT_COUNT_CALLS],
-            "reserved_input": 2383, "reserved_output": 4098,
-            "actual_input": 28, "actual_output": 2}
+            "reserved_input": 7419, "reserved_output": 8194,
+            "actual_input": 4907, "actual_output": 4098}
 
 
 class DuplicateStepRefusal(unittest.TestCase):
@@ -141,43 +149,45 @@ class CountCallAccounting(unittest.TestCase):
         self.assertEqual(len(b.state["count_calls"]), 1)
         # incident fixture: all 3 charged + 3 count entries survive intact
         b2 = make_budget(tmp, incident_state())
-        self.assertEqual(len(b2.state["calls"]), 3)
-        self.assertEqual(len(b2.state["count_calls"]), 3)
+        self.assertEqual(len(b2.state["calls"]), 4)
+        self.assertEqual(len(b2.state["count_calls"]), 4)
         self.assertIsNone(b2.state["calls"][1]["actual"])  # unknown kept
 
 
 class IncidentEnvelopeCoherence(unittest.TestCase):
-    """6/6 envelope over the incident ledger: exactly arch+glue+test remain,
-    heal and probe are burned, reachable bounds stay inside aggregates."""
+    """The ACTUAL 4+4 incident ledger is closed: probe, auto-heal AND
+    architecture-manifest are burned; 2+2 slots remain numerically but the
+    run can never complete (arch is gone, glue/test depend on it), and the
+    driver records the run failed_terminal. A future attempt is a fresh
+    ledger under fresh authority - this one is never reused."""
 
-    def test_remaining_capacity_exactly_three_stages(self):
+    def test_closed_ledger_burned_steps_and_terminal(self):
         tmp = tempfile.mkdtemp(prefix="rf063-envelope-")
         b = make_budget(tmp, incident_state())
-        # burned steps refuse
-        with self.assertRaises(BudgetExceeded):
-            b.reserve("probe", 171, 1)
-        with self.assertRaises(BudgetExceeded):
-            b.reserve("auto-heal", 2041, 4096)
-        # arch/glue/test at worst-case reservations fit
-        for step in ("architecture-manifest", "glue-synthesis",
-                     "test-synthesis"):
-            b.reserve(step, 12000, 4096)
-        # 7th charged call impossible
+        # all three executed step names refuse
+        for step, args in (("probe", (171, 1)),
+                           ("auto-heal", (2041, 4096)),
+                           ("architecture-manifest", (5036, 4096))):
+            with self.assertRaises(BudgetExceeded):
+                b.reserve(step, *args)
+            with self.assertRaises(BudgetExceeded):
+                b.record_count(step)
+        # 2+2 slots numerically remain (6/6 envelope) but cannot finish
+        # the pipeline; a 7th call is impossible regardless
+        b.reserve("glue-synthesis", 12000, 4096)
+        b.reserve("test-synthesis", 12000, 4096)
         with self.assertRaises(BudgetExceeded):
             b.reserve("extra", 100, 10)
-        # counts: 3 backfilled + 3 new = 6; 7th refuses
-        for step in ("architecture-manifest", "glue-synthesis",
-                     "test-synthesis"):
-            b.record_count(step)
+        b.record_count("glue-synthesis")
+        b.record_count("test-synthesis")
         with self.assertRaises(BudgetExceeded):
             b.record_count("extra")
-        # reachable aggregates inside the envelope
-        self.assertLessEqual(b.state["reserved_input"],  # 2383 + 36000
-                             RUN_ENVELOPE["max_total_input_tokens"])
-        self.assertLessEqual(b.state["reserved_output"],  # 4098 + 12288
-                             RUN_ENVELOPE["max_total_output_tokens"])
         self.assertEqual(len(b.state["calls"]), 6)
         self.assertEqual(len(b.state["count_calls"]), 6)
+        self.assertLessEqual(b.state["reserved_input"],
+                             RUN_ENVELOPE["max_total_input_tokens"])
+        self.assertLessEqual(b.state["reserved_output"],
+                             RUN_ENVELOPE["max_total_output_tokens"])
 
 
 class DriverStateRecovery(unittest.TestCase):
@@ -186,9 +196,10 @@ class DriverStateRecovery(unittest.TestCase):
 
     def _load_driver(self):
         import importlib.util
-        path = "/home/sandbox/run_qual_staged.py"
+        # External runtime artifact; set REPOFUSE_TEST_DRIVER_PATH to enable.
+        path = os.environ.get("REPOFUSE_TEST_DRIVER_PATH", "")
         if not os.path.isfile(path):
-            self.skipTest("driver not present in this environment")
+            self.skipTest("REPOFUSE_TEST_DRIVER_PATH not set to a staged driver file")
         spec = importlib.util.spec_from_file_location("run_qual_staged",
                                                       path)
         mod = importlib.util.module_from_spec(spec)
@@ -271,12 +282,10 @@ class CountEndpointNoRetry(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="rf063-countguard2-")
         b = make_budget(tmp, incident_state())
         # burned steps refuse at the count checkpoint
-        with self.assertRaises(BudgetExceeded):
-            b.record_count("probe")
-        with self.assertRaises(BudgetExceeded):
-            b.record_count("auto-heal")
-        # arch/glue/test have no count entries yet and must pass
-        for step in ("architecture-manifest", "glue-synthesis",
-                     "test-synthesis"):
+        for step in ("probe", "auto-heal", "architecture-manifest"):
+            with self.assertRaises(BudgetExceeded):
+                b.record_count(step)
+        # glue/test have no count entries yet and must pass
+        for step in ("glue-synthesis", "test-synthesis"):
             b.record_count(step)
         self.assertEqual(len(b.state["count_calls"]), 6)

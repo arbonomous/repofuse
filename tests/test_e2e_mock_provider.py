@@ -25,7 +25,10 @@ from repofuse import model_api
 from repofuse import synthesize as synth_mod
 from repofuse.qualification import target as qual_target
 
-DRIVER_PATH = "/home/sandbox/run_qual_staged.py"
+# Portable: the staged qualification driver is an external runtime
+# artifact, not part of this package. Point REPOFUSE_TEST_DRIVER_PATH
+# at it to enable these tests; they skip when it is unset.
+DRIVER_PATH = os.environ.get("REPOFUSE_TEST_DRIVER_PATH", "")
 
 
 def make_fixture_repo(root, slug, module_body):
@@ -64,14 +67,27 @@ class ContractFake:
 
     def chat_completion(self, messages, model="muse-spark-1.3",
                         max_tokens=4096, timeout=60, base_url=None,
-                        env=None):
+                        env=None, reasoning_effort=None,
+                        response_format=None):
         self.chat_calls += 1
         self._check_messages(messages)
         assert isinstance(max_tokens, int) and 1 <= max_tokens <= 4096
         assert (env or os.environ).get("MODEL_API_KEY") or \
                (env or os.environ).get("META_API_KEY"), "no key presented"
         joined = " ".join(m["content"] for m in messages)
-        if "architecture bridge manifest" in joined:
+        if "Reply with the word" in joined:
+            # probe: contract unchanged, no controls required
+            content = "ready"
+            finish = "stop"
+        elif "architecture bridge manifest" in joined:
+            assert reasoning_effort == "minimal", reasoning_effort
+            assert response_format is not None
+            assert response_format["type"] == "json_schema"
+            js = response_format["json_schema"]
+            assert js["name"] == "architecture_manifest"
+            assert set(js["schema"]["required"]) == {
+                "source_exports", "arbitrage_opportunity",
+                "required_shims", "bridge", "risks"}
             content = json.dumps({
                 "source_exports": {"fixweb": ["App", "route"],
                                    "fixdb": ["Model", "connect"]},
@@ -86,13 +102,22 @@ class ContractFake:
             if finish == "length":  # simulate the 2026-11-04 truncation
                 content = content[:120]  # unterminated JSON
         elif "adapter shim code" in joined:
+            assert reasoning_effort == "minimal", reasoning_effort
+            # glue: valid-JSON mode ONLY, never claimed schema-constrained
+            assert response_format == {"type": "json_object"}
             content = json.dumps({"app_adapter.py":
                                   "# generated adapter\nVALUE = 1\n"})
             finish = "stop"
-        else:  # test prompt
+        elif "integration test file" in joined:
+            assert reasoning_effort == "minimal", reasoning_effort
+            assert response_format["type"] == "json_schema"
+            assert response_format["json_schema"]["schema"]["required"] == \
+                ["test_fused.py"]
             content = json.dumps({"test_fused.py":
                                   "import unittest\n"})
             finish = "stop"
+        else:
+            raise AssertionError("unrecognized prompt in fake provider")
         prompt_chars = sum(len(m["content"]) for m in messages)
         return {"content": content, "model": model,
                 "usage": {"prompt_tokens": prompt_chars // 4,
@@ -110,7 +135,7 @@ class ContractFake:
 class E2EMockProvider(unittest.TestCase):
     def setUp(self):
         if not os.path.isfile(DRIVER_PATH):
-            self.skipTest("staged driver not present in this environment")
+            self.skipTest("REPOFUSE_TEST_DRIVER_PATH not set to a staged driver file")
         import importlib.util
         spec = importlib.util.spec_from_file_location("run_qual_staged",
                                                       DRIVER_PATH)
@@ -121,6 +146,11 @@ class E2EMockProvider(unittest.TestCase):
         self.drv.OUT = self.tmp
         self.drv.STATE = os.path.join(self.tmp, "staged_state.json")
         self.drv.ATTEST = os.path.join(self.tmp, "glue_review.attestation.json")
+        import shutil
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "repofuse", "qualification",
+                                 "proposed_envelope.json"),
+                    os.path.join(self.tmp, "envelope.json"))
         # fixture repos through REAL ingest (local-path boundary only)
         root = os.path.join(self.tmp, "src")
         os.makedirs(root)
@@ -262,7 +292,7 @@ class TerminalFailureHandling(unittest.TestCase):
     def _driver(self):
         import importlib.util
         if not os.path.isfile(DRIVER_PATH):
-            self.skipTest("staged driver not present in this environment")
+            self.skipTest("REPOFUSE_TEST_DRIVER_PATH not set to a staged driver file")
         spec = importlib.util.spec_from_file_location("run_qual_staged",
                                                       DRIVER_PATH)
         mod = importlib.util.module_from_spec(spec)
@@ -364,3 +394,283 @@ class TerminalFailureHandling(unittest.TestCase):
         nxt = drv.next_action(st)
         self.assertTrue(nxt.startswith("TERMINAL"), nxt)
         self.assertIn("no retries", nxt)
+
+
+class RequestControlsContract(unittest.TestCase):
+    """0.6.6: the REAL model_api serializes the documented controls into
+    the actual request payload, omits them when unset, and provider
+    rejection (HTTP 400 on a bad combo) becomes a recorded terminal
+    failure - all offline against a monkeypatched transport."""
+
+    def _capture_post(self, captured, body=None, exc=None):
+        def fake_post(url, payload, key, timeout):
+            captured.append({"url": url, "payload": dict(payload)})
+            if exc is not None:
+                raise exc
+            return body or {"choices": [{"message": {"content": "{}"},
+                                         "finish_reason": "stop"}],
+                            "model": "muse-spark-1.3",
+                            "usage": {"prompt_tokens": 5,
+                                      "completion_tokens": 1}}
+        return fake_post
+
+    def test_payload_carries_controls_when_set(self):
+        captured = []
+        orig = model_api._post
+        model_api._post = self._capture_post(captured)
+        try:
+            model_api.chat_completion(
+                [{"role": "user", "content": "hi"}],
+                env={"MODEL_API_KEY": "offline-contract-test-key"},
+                reasoning_effort="minimal",
+                response_format={"type": "json_object"})
+        finally:
+            model_api._post = orig
+        p = captured[0]["payload"]
+        self.assertEqual(p["reasoning_effort"], "minimal")
+        self.assertEqual(p["response_format"], {"type": "json_object"})
+        self.assertEqual(p["model"], "muse-spark-1.3")
+        self.assertEqual(p["max_tokens"], 4096)
+
+    def test_payload_omits_controls_when_unset(self):
+        captured = []
+        orig = model_api._post
+        model_api._post = self._capture_post(captured)
+        try:
+            model_api.chat_completion(
+                [{"role": "user", "content": "hi"}],
+                env={"MODEL_API_KEY": "offline-contract-test-key"})
+        finally:
+            model_api._post = orig
+        self.assertNotIn("reasoning_effort", captured[0]["payload"])
+        self.assertNotIn("response_format", captured[0]["payload"])
+
+    def test_provider_400_is_terminal_failure(self):
+        tmp = tempfile.mkdtemp(prefix="rf066-400-")
+        manifest = {"repos": [{"slug": "a", "role": "interface",
+                               "exports": ["App"], "routes": [],
+                               "dependency_count": 0}],
+                    "boundary_candidates": [], "conflicts": []}
+        metas = [{"slug": "a", "readme_excerpt": "", "tree": []}]
+        fake = ContractFake()
+        orig_count, orig_chat = model_api.count_tokens, model_api.chat_completion
+
+        def rejecting_chat(messages, **k):
+            if "architecture bridge manifest" in \
+                    " ".join(m["content"] for m in messages):
+                raise model_api.ModelCallError(
+                    "HTTP 400: unsupported response_format combo")
+            return fake.chat_completion(messages, **k)
+
+        model_api.count_tokens = fake.count_tokens
+        model_api.chat_completion = rejecting_chat
+        os.environ["MODEL_API_KEY"] = "offline-contract-test-key"
+        try:
+            res = synth_mod.run_synthesis(manifest, metas, tmp, env=None)
+        finally:
+            model_api.count_tokens = orig_count
+            model_api.chat_completion = orig_chat
+            os.environ.pop("MODEL_API_KEY", None)
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("400", res["detail"])
+        # reservation exists, never committed; glue never fired
+        b = json.load(open(os.path.join(tmp, "budget.json")))
+        arch = [c for c in b["calls"] if c["step"] == "architecture-manifest"]
+        self.assertIsNone(arch[0]["actual"])
+        self.assertFalse(any(c["step"] == "glue-synthesis"
+                             for c in b["calls"]))
+
+
+class ProposedFreshRunEnvelope(unittest.TestCase):
+    """0.6.7 proposal shape: a FRESH run under the proposed 4/4 envelope
+    runs probe -> arch -> glue -> test and NOTHING else, strictly."""
+
+    def _load_driver(self):
+        import importlib.util
+        if not os.path.isfile(DRIVER_PATH):
+            self.skipTest("REPOFUSE_TEST_DRIVER_PATH not set to a staged driver file")
+        spec = importlib.util.spec_from_file_location("run_qual_staged",
+                                                      DRIVER_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_envelope_override_4_4_strict(self):
+        from repofuse.budget import Budget, BudgetExceeded
+        tmp = tempfile.mkdtemp(prefix="rf067-env-")
+        env = {"max_calls": 4, "max_count_calls": 4,
+               "max_input_tokens": 12000, "max_output_tokens": 4096,
+               "max_total_input_tokens": 48000,
+               "max_total_output_tokens": 16384}
+        env_path = os.path.join(tmp, "envelope.json")
+        with open(env_path, "w") as f:
+            json.dump(env, f)
+        b = Budget(os.path.join(tmp, "budget.json"), envelope_path=env_path)
+        for step in ("probe", "architecture-manifest", "glue-synthesis",
+                     "test-synthesis"):
+            b.reserve(step, 100, 10)
+            b.record_count(step)
+        with self.assertRaises(BudgetExceeded):
+            b.reserve("auto-heal", 100, 10)
+        with self.assertRaises(BudgetExceeded):
+            b.record_count("auto-heal")
+        self.assertEqual(b.envelope["max_calls"], 4)
+        self.assertEqual(b.envelope["max_count_calls"], 4)
+
+    def test_fresh_driver_sequence_probe_first(self):
+        drv = self._load_driver()
+        tmp = tempfile.mkdtemp(prefix="rf067-fresh-")
+        drv.OUT = tmp
+        drv.STATE = os.path.join(tmp, "staged_state.json")
+        drv.ATTEST = os.path.join(tmp, "attest.json")
+        # proposed envelope config placed deliberately for this run
+        import shutil
+        shutil.copy(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "repofuse", "qualification",
+                                 "proposed_envelope.json"),
+                    os.path.join(tmp, "envelope.json"))
+        # fixture repos through real ingest
+        root = os.path.join(tmp, "src")
+        os.makedirs(root)
+        web = make_fixture_repo(root, "fixweb", "class App:\n    pass\n")
+        db = make_fixture_repo(root, "fixdb", "class Model:\n    pass\n")
+        orig_target = qual_target.TARGET
+        qual_target.TARGET = {
+            "name": "offline-fixture", "contract": {"module": "x"},
+            "inputs": {"fixweb": {"url": web, "commit": None,
+                                  "license": "MIT"},
+                       "fixdb": {"url": db, "commit": None,
+                                 "license": "MIT"}}}
+        orig_ingest = ingest_mod.ingest
+        ingest_mod.ingest = lambda url, workdir, expected_sha=None, **k: \
+            orig_ingest(url, workdir, allow_local=True)
+        fake = ContractFake()
+        orig_count, orig_chat = model_api.count_tokens, model_api.chat_completion
+        model_api.count_tokens = fake.count_tokens
+        model_api.chat_completion = fake.chat_completion
+        os.environ["MODEL_API_KEY"] = "offline-contract-test-key"
+
+        def stage(name):
+            argv = sys.argv
+            sys.argv = ["run_qual_staged.py", name]
+            try:
+                drv.main()
+            finally:
+                sys.argv = argv
+
+        try:
+            # fresh state: probe is the first allowed action
+            self.assertEqual(drv.next_action(drv.load_state()), "probe")
+            for st_name in ("probe", "arch", "glue", "test"):
+                stage(st_name)
+            b = json.load(open(os.path.join(tmp, "budget.json")))
+            self.assertEqual([c["step"] for c in b["calls"]],
+                             ["probe", "architecture-manifest",
+                              "glue-synthesis", "test-synthesis"])
+            self.assertEqual([c["step"] for c in b["count_calls"]],
+                             ["probe", "architecture-manifest",
+                              "glue-synthesis", "test-synthesis"])
+            self.assertEqual(len(b["calls"]), 4)
+            self.assertEqual(len(b["count_calls"]), 4)
+            self.assertEqual(fake.chat_calls, 4)
+            self.assertEqual(fake.count_calls, 4)
+            # next action is the offline corpus-review gate, NOT heal
+            nxt = drv.next_action(drv.load_state())
+            self.assertEqual(nxt, "gate", nxt)
+            # probe cannot be re-run (no retries)
+            stage("probe")  # prints no-duplicate, makes no call
+            self.assertEqual(fake.chat_calls, 4)
+        finally:
+            qual_target.TARGET = orig_target
+            ingest_mod.ingest = orig_ingest
+            model_api.count_tokens = orig_count
+            model_api.chat_completion = orig_chat
+            os.environ.pop("MODEL_API_KEY", None)
+
+
+class FailClosedEnvelope(unittest.TestCase):
+    """0.6.8 grant integrity: missing/malformed/partial/wrong-cap envelope
+    config refuses BEFORE any provider traffic - never a silent fallback
+    to the 6/6 defaults."""
+
+    def _driver(self):
+        import importlib.util
+        if not os.path.isfile(DRIVER_PATH):
+            self.skipTest("REPOFUSE_TEST_DRIVER_PATH not set to a staged driver file")
+        spec = importlib.util.spec_from_file_location("run_qual_staged",
+                                                      DRIVER_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _probe_with_env(self, env_obj):
+        """Run the driver probe stage against a fresh OUT with the given
+        envelope.json content (None = absent); return provider call count."""
+        drv = self._driver()
+        tmp = tempfile.mkdtemp(prefix="rf068-env-")
+        drv.OUT = tmp
+        drv.STATE = os.path.join(tmp, "staged_state.json")
+        drv.ATTEST = os.path.join(tmp, "attest.json")
+        if env_obj is not None:
+            with open(os.path.join(tmp, "envelope.json"), "w") as f:
+                f.write(env_obj if isinstance(env_obj, str)
+                        else json.dumps(env_obj))
+        root = os.path.join(tmp, "src")
+        os.makedirs(root)
+        web = make_fixture_repo(root, "fixweb", "class App:\n    pass\n")
+        db = make_fixture_repo(root, "fixdb", "class Model:\n    pass\n")
+        orig_target = qual_target.TARGET
+        qual_target.TARGET = {
+            "name": "offline-fixture", "contract": {"module": "x"},
+            "inputs": {"fixweb": {"url": web, "commit": None,
+                                  "license": "MIT"},
+                       "fixdb": {"url": db, "commit": None,
+                                 "license": "MIT"}}}
+        orig_ingest = ingest_mod.ingest
+        ingest_mod.ingest = lambda url, workdir, expected_sha=None, **k: \
+            orig_ingest(url, workdir, allow_local=True)
+        fake = ContractFake()
+        orig_count, orig_chat = model_api.count_tokens, model_api.chat_completion
+        model_api.count_tokens = fake.count_tokens
+        model_api.chat_completion = fake.chat_completion
+        os.environ["MODEL_API_KEY"] = "offline-contract-test-key"
+        argv = sys.argv
+        try:
+            sys.argv = ["run_qual_staged.py", "probe"]
+            with self.assertRaises(SystemExit) as ctx:
+                drv.main()
+            self.assertEqual(ctx.exception.code, 2)
+        finally:
+            sys.argv = argv
+            qual_target.TARGET = orig_target
+            ingest_mod.ingest = orig_ingest
+            model_api.count_tokens = orig_count
+            model_api.chat_completion = orig_chat
+            os.environ.pop("MODEL_API_KEY", None)
+        self.assertEqual(fake.count_calls + fake.chat_calls, 0,
+                         "provider was contacted despite bad envelope")
+        self.assertFalse(os.path.exists(os.path.join(tmp, "budget.json")),
+                         "ledger created despite refusal")
+
+    def test_missing_envelope_refuses_zero_traffic(self):
+        self._probe_with_env(None)
+
+    def test_malformed_envelope_refuses_zero_traffic(self):
+        self._probe_with_env("{not json")
+
+    def test_partial_envelope_refuses_zero_traffic(self):
+        self._probe_with_env({"max_calls": 4, "max_count_calls": 4})
+
+    def test_wrong_caps_refuse_zero_traffic(self):
+        self._probe_with_env({"max_calls": 6, "max_count_calls": 6,
+                              "max_input_tokens": 12000,
+                              "max_output_tokens": 4096,
+                              "max_total_input_tokens": 60000,
+                              "max_total_output_tokens": 20480})
+
+    def test_budget_fail_closed_on_missing_explicit_envelope(self):
+        from repofuse.budget import Budget, BudgetExceeded
+        tmp = tempfile.mkdtemp(prefix="rf068-budget-")
+        with self.assertRaises(BudgetExceeded):
+            Budget(os.path.join(tmp, "b.json"),
+                   envelope_path=os.path.join(tmp, "nope.json"))

@@ -111,11 +111,21 @@ def count_tokens(messages, model=DEFAULT_MODEL, timeout=30, env=None):
 
 
 def chat_completion(messages, model=DEFAULT_MODEL, max_tokens=4096,
-                    timeout=60, base_url=DEFAULT_BASE_URL, env=None):
+                    timeout=60, base_url=DEFAULT_BASE_URL, env=None,
+                    reasoning_effort=None, response_format=None):
     """One measured, capped chat completion. No retries, no redirects.
 
     max_tokens is clamped to the caller-visible hard cap by budget.py; this
     function additionally refuses values above 4096.
+
+    Optional documented request controls (dev.meta.ai/docs/reasoning and
+    /docs/structured-output), passed through verbatim when set:
+    - reasoning_effort: top-level Chat Completions parameter; muse-spark
+      always reasons ("none" returns HTTP 400), reasoning tokens share the
+      max_tokens budget and billed output.
+    - response_format: {"type": "json_schema", "json_schema": {...}} for
+      schema-constrained decoding, or {"type": "json_object"} for
+      valid-JSON-only mode (NOT schema-constrained - do not conflate).
     """
     key = _api_key(env)
     if not key:
@@ -124,6 +134,10 @@ def chat_completion(messages, model=DEFAULT_MODEL, max_tokens=4096,
     if max_tokens > 4096:
         raise ModelCallError(f"max_tokens {max_tokens} exceeds hard cap 4096")
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    if response_format is not None:
+        payload["response_format"] = response_format
     started = time.monotonic()
     body = _post(base_url.rstrip("/") + "/chat/completions", payload, key,
                  timeout)
