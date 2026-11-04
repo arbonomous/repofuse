@@ -91,3 +91,37 @@ string, stated plainly.
   repo pair is unknown until tried
 - no tonight end-to-end commitment
 - no execution of generated or vendored code without the gates above
+
+## Studio wiring status (implemented, DISARMED)
+
+The route above is wired into Studio as a callable entrypoint, in a
+state where spending is structurally impossible:
+
+- `POST /api/build-general` (run_id): the spend/safety gate runs
+  BEFORE the build thread spawns - a warn verdict without an
+  out-of-band ack (studio/safety-acks/<run>.json, written by a person,
+  never via HTTP) is refused with 403 before any count or provider
+  call. Then run_general_build runs `run_synthesis` over THIS run's
+  own vendored tree with the picked idea as user_intent and
+  envelope_path=studio/envelope.general.json. That file does not
+  exist: the fail-closed Budget refuses, zero provider contact. It
+  also stops at pending_no_key when no key is presented. Both states
+  are reported honestly as DISARMED, not as failures or successes.
+- Idea click -> `POST /api/prepare-bundle` (free, key-stripped env,
+  prompt bundle written, nothing sent) is the STEERING step; it is
+  not generation. The click -> core-generation path is
+  /api/build-general only. The fixed-stack /api/build remains for the
+  recorded-notes replay only; non-recorded picks route to the general
+  route.
+- After a (future, separately granted) completed run: nothing
+  executes. The whole tree (generated + vendored) is pinned with
+  review-request.json (sha256 per file); status awaiting_review.
+  `POST /api/build-general/verify` re-checks the reviewer-only
+  attestation (studio's APPROVALS dir, no HTTP writer) and only then
+  runs the sandboxed verify; the app is NOT auto-served. No
+  attestation, or one tampered byte anywhere in the tree, refuses.
+- Offline fixtures (tests/test_general_build_route.py): disarmed
+  without envelope+key; armed with a fake provider + fixture envelope
+  (4/4 ceiling) reaches awaiting_review with the whole tree pinned,
+  nothing executed (no __pycache__ anywhere); the verify path refuses
+  without attestation and states bwrap unavailability exactly.

@@ -199,7 +199,10 @@
       if (i < target.length) typing = requestAnimationFrame(tick);
     })();
   }
+  // innerHTML variant: static literals only (recorded-run markup).
   const tokenMeter = (html) => ($("#token-meter").innerHTML = html);
+  // server-supplied provenance (model name, usage counts): textContent.
+  const tokenMeterText = (text) => { $("#token-meter").textContent = text; };
   const CODE_TABS = ["generated/app.py", "test_fused.py", "assistant_ext.py"];
 
   /* ---------------- idea cards (from real local analysis, no model) ---------------- */
@@ -300,10 +303,20 @@
       ? "the AI-suggested idea you picked"
       : "a locally-generated analysis card you picked (no model call produced it)";
     setStage("architecture", "running");
-    log(`Building <span class="hl">${card.title}</span> - the repos get re-pinned at the exact commits from this run; each model stage is honestly gated.`);
-    fetch("/api/build", {
+    const bl = document.createElement("div");
+    bl.className = "log-line";
+    bl.appendChild(document.createTextNode("Building "));
+    const bh = document.createElement("span");
+    bh.className = "hl";
+    bh.textContent = String(card.title);
+    bl.appendChild(bh);
+    bl.appendChild(document.createTextNode(
+      " via the GENERAL core route: this run's own vendored repos, " +
+      "your picked idea as steering, every stage honestly gated."));
+    logEl.appendChild(bl);
+    fetch("/api/build-general", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: lastRunId, card }),
+      body: JSON.stringify({ run_id: lastRunId }),
     }).then(r => r.json()).then(resp => {
       if (resp.error) { verdict(resp.error, "fail"); return; }
       pollLive(lastRunId, liveSeen);
@@ -321,6 +334,17 @@
       pollLive(runId, liveSeen);
     }).catch(e => verdict(`resume request failed honestly: ${e}`, "fail"));
   }
+  function verifyGeneral(runId) {
+    setStage("verify", "running", "re-check attestation + sandbox verify");
+    fetch("/api/build-general/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    }).then(r => r.json()).then(resp => {
+      if (resp.error) { verdict(`verify refused honestly: ${resp.error}`, "fail"); setStage("verify", "blocked", "awaiting source review"); return; }
+      pollLive(runId, liveSeen);
+    }).catch(e => verdict(`verify request failed honestly: ${e}`, "fail"));
+  }
+
 
   /* ================= LIVE MODE (real free stages) ================= */
   async function startLive() {
@@ -414,11 +438,11 @@
               ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
               : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
           log(ev.text);
-          tokenMeter(pa && pa.spent === true
-            ? `paid stages: <b>1 model call made</b> &middot; its output rejected, nothing retried`
+          tokenMeterText(pa && pa.spent === true
+            ? "paid stages: 1 model call made - its output rejected, nothing retried"
             : pa && pa.spent === null
-              ? `paid stages: call state <b>UNKNOWN</b> &middot; check the retained record`
-              : `paid stages: <b>disabled</b> &middot; 0 model calls made &middot; 0 keys used`);
+              ? "paid stages: call state UNKNOWN - check the retained record"
+              : "paid stages: disabled - 0 model calls made - 0 keys used");
         }
         else {
           log(ev.text.replace(/(pinned at \w+|license \S+|exports,?)/g, '<span class="hl">$1</span>'));
@@ -453,10 +477,17 @@
         if (ev.kind === "error" && ev.stage === "vendor") {
           setStage("vendor", "blocked", "failed honestly");
         }
+        if (ev.kind === "stage_done" && ev.stage === "architecture")
+          setStage("architecture", "done", "manifest generated");
+        if (ev.kind === "stage_done" && ev.stage === "glue")
+          setStage("glue", "done", "generated, slots only");
+        if (ev.kind === "stage_done" && ev.stage === "tests")
+          setStage("tests", "done", "generated, test slot only");
         if (ev.kind === "review") {
-          setStage("architecture", "done", "plan accepted");
-          setStage("glue", "done", "generated + linted");
-          setStage("tests", "done", "generated + linted");
+          const isGeneral = !!(ev.data && ev.data.general);
+          setStage("architecture", "done", isGeneral ? "manifest generated" : "plan accepted");
+          setStage("glue", "done", isGeneral ? "generated, slots only" : "generated + linted");
+          setStage("tests", "done", isGeneral ? "generated, test slot only" : "generated + linted");
           setStage("verify", "blocked", "awaiting source review");
           setBadge("LIVE &middot; generated + pinned &middot; nothing executed", "live");
           verdict("PINNED FOR REVIEW - nothing executed; an independent reviewer must approve these exact bytes first", "fail");
@@ -467,8 +498,10 @@
           if (!document.getElementById("resume-btn")) {
             const rb = document.createElement("button");
             rb.id = "resume-btn"; rb.className = "ghost-btn";
-            rb.textContent = "Review approved? Resume build (no generation)";
-            rb.onclick = () => resumeBuild(runId);
+            rb.textContent = isGeneral
+              ? "Review attested? Verify reviewed bytes (no generation)"
+              : "Review approved? Resume build (no generation)";
+            rb.onclick = () => isGeneral ? verifyGeneral(runId) : resumeBuild(runId);
             logEl.appendChild(rb);
           }
         }
@@ -494,13 +527,14 @@
             setBadge("LIVE &middot; free stages &middot; 1 paid call (output rejected)", "live");
           else if (pa && pa.spent === null)
             setBadge("LIVE &middot; free stages &middot; paid call state UNKNOWN", "live");
-          tokenMeter(p
-            ? `ideas from <b>${p.model}</b> &middot; 1 model call &middot; <b>${p.usage.input}</b> in / <b>${p.usage.output}</b> out`
+          // server-supplied model name/usage: textContent only
+          tokenMeterText(p
+            ? `ideas from ${p.model} - 1 model call - ${p.usage.input} in / ${p.usage.output} out`
             : (pa && pa.spent === true
-              ? `ideas from <b>local analysis</b> &middot; 1 model call made &middot; its output rejected, fallback shown`
+              ? "ideas from local analysis - 1 model call made - its output rejected, fallback shown"
               : pa && pa.spent === null
-                ? `ideas from <b>local analysis</b> &middot; paid call state UNKNOWN &middot; check the retained record before any retry`
-                : `ideas from <b>local analysis</b> &middot; 0 model calls made`));
+                ? "ideas from local analysis - paid call state UNKNOWN - check the retained record before any retry"
+                : "ideas from local analysis - 0 model calls made"));
         }
       }
       if (snap.status !== "running" && snap.status !== "resuming") { liveSeen = seen; break; }
