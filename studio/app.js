@@ -292,18 +292,26 @@
     startBuild(card);
   }
 
-  function startBuild(card) {
+  async function startBuild(card) {
     if (!lastRunId) return;
     lastBuildGeneral = true;
     // FREE steering first: the picked idea enters the REAL core prompt
     // bundle for this run's vendored repos (dry run, nothing sent).
-    fetch("/api/prepare-bundle", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: lastRunId, card }),
-    }).then(r => r.json()).then(resp => {
-      (resp.lines || [resp.error || "bundle preparation failed honestly"])
+    try {
+      const prep = await fetch("/api/prepare-bundle", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: lastRunId, card }),
+      }).then(r => r.json());
+      (prep.lines || [prep.error || "bundle preparation failed honestly"])
         .forEach(t => logText(t));
-    }).catch(() => logText("bundle preparation unreachable honestly"));
+      if (prep.error || prep.status !== "prepared_not_sent") {
+        verdict(prep.error || "bundle preparation did not complete; build not started", "fail");
+        return;
+      }
+    } catch (e) {
+      verdict(`bundle preparation unreachable; build not started: ${e}`, "fail");
+      return;
+    }
     const li = lastIdeas || {};
     buildInputDesc = (li.source && li.source.indexOf("model:") === 0)
       ? "the AI-suggested idea you picked"
@@ -388,11 +396,16 @@
   /* ================= LIVE MODE (real free stages) ================= */
   async function startLive() {
     const repoA = $("#repo-a").value, repoB = $("#repo-b").value, intent = $("#intent").value;
-    const resp = await fetch("/api/fuse", {
+    const response = await fetch("/api/fuse", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo_a: repoA, repo_b: repoB, intent }),
-    }).then(r => r.json());
-    lastRunId = resp.run_id; liveSeen = 0;
+    });
+    const resp = await response.json();
+    if (!response.ok || resp.error || !/^run-[0-9a-f]{16}$/.test(resp.run_id || "")) {
+      $("#local-run-message").textContent = resp.error || `Start refused (HTTP ${response.status}).`;
+      return;
+    }
+    lastRunId = resp.run_id; lastBuildGeneral = false; liveSeen = 0;
     setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
     show("#screen-build");
     buildRail([
@@ -427,7 +440,13 @@
     let seen = startSeen;
     const repoLive = [];
     for (;;) {
-      const snap = await fetch("/api/run/" + runId).then(r => r.json());
+      const response = await fetch("/api/run/" + runId);
+      const snap = await response.json();
+      if (!response.ok || snap.error || !Array.isArray(snap.events)) {
+        verdict(snap.error || `Run status unavailable (HTTP ${response.status}). No restart was requested.`, "fail");
+        liveSeen = seen;
+        return;
+      }
       for (; seen < snap.events.length; seen++) {
         const ev = snap.events[seen];
         if (ev.stage === "safety") {
@@ -526,13 +545,7 @@
         if (ev.kind === "stage_done" && ev.stage === "verify" && lastBuildGeneral
             && ev.text && ev.text.indexOf("PASSED") !== -1) {
           setStage("verify", "done", "sandbox verify passed");
-          if (!document.getElementById("serve-btn")) {
-            const sb = document.createElement("button");
-            sb.id = "serve-btn"; sb.className = "ghost-btn";
-            sb.textContent = "Serve the reviewed app";
-            sb.onclick = () => serveGeneral(runId);
-            logEl.appendChild(sb);
-          }
+
         }
         if (ev.kind === "review") {
           const isGeneral = !!(ev.data && ev.data.general);
@@ -588,6 +601,19 @@
                 ? "ideas from local analysis - paid call state UNKNOWN - check the retained record before any retry"
                 : "ideas from local analysis - 0 model calls made"));
         }
+      }
+      // Historical logs never grant a live action. Only the current
+      // server snapshot can offer Serve; the server rechecks every gate.
+      const currentServe = document.getElementById("serve-btn");
+      if (currentServe && (snap.status !== "build_verified" || !lastBuildGeneral))
+        currentServe.remove();
+      if (snap.status === "build_verified" && lastBuildGeneral
+          && !document.getElementById("serve-btn")) {
+        const sb = document.createElement("button");
+        sb.id = "serve-btn"; sb.className = "ghost-btn";
+        sb.textContent = "Serve the reviewed app";
+        sb.onclick = () => serveGeneral(runId);
+        logEl.appendChild(sb);
       }
       // Historical events remain verbatim; current state wins for badges.
       if (snap.status === "build_verified" && lastBuildGeneral) {
@@ -834,9 +860,9 @@
 
   /* ---------------- wire up ---------------- */
   $("#fuse-btn").onclick = () => startLive().catch(e => {
-    show("#screen-build");
-    logEl.innerHTML = "";
-    verdict("Could not reach the local server. Start it: python3 studio/serve.py", "fail");
+    const detail = `The request could not finish: ${e && e.message ? e.message : String(e)}. Existing run logs are preserved; no restart was requested.`;
+    $("#local-run-message").textContent = detail;
+    if ($("#screen-build").classList.contains("active")) verdict(detail, "fail");
   });
   const replayBtn = $("#replay-btn");
   replayBtn.onclick = () => runReplay();
