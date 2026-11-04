@@ -1,0 +1,46 @@
+{
+ "origin": "SANITIZED test fixture derived from the retained attempt-2 response plan (run-b16b4c4b772e176d, 2026-11-04). Provider metadata (usage/latency/model) stripped. The immutable raw record stays in gitignored paid-build/; this fixture exists so the regression runs on a fresh checkout.",
+ "plan_payload": {
+  "plan": {
+   "app_name": "notes_api",
+   "crud_prefix": "/notes",
+   "entity": "Note",
+   "fields": [
+    {
+     "name": "title",
+     "type": "string"
+    },
+    {
+     "name": "content",
+     "type": "string"
+    }
+   ],
+   "notes": "Tentative plan for a single-entity personal notes CRUD API with no login or auth. Uses Microdot for JSON routes and peewee SQLite model. No security guarantees.",
+   "routes": [
+    "POST /notes",
+    "GET /notes",
+    "GET /notes/<id>",
+    "PUT /notes/<id>",
+    "DELETE /notes/<id>"
+   ],
+   "uses": [
+    {
+     "exports": [
+      "Microdot",
+      "Request",
+      "Response"
+     ],
+     "repo": "microdot"
+    },
+    {
+     "exports": [
+      "AutoField",
+      "Base",
+      "BaseModelSelect"
+     ],
+     "repo": "peewee"
+    }
+   ]
+  }
+ }
+}

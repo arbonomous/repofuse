@@ -191,16 +191,19 @@ ARCH_SCHEMA = _schema("build_architecture", {
         "plan": {
             "type": "object",
             "properties": {
-                "app_name": {"type": "string"},
+                "app_name": {"type": "string", "maxLength": 60},
                 "crud_prefix": {"type": "string"},
-                "entity": {"type": "string"},
-                "fields": {"type": "array", "items": {
+                "entity": {"type": "string", "maxLength": 40},
+                "fields": {"type": "array", "maxItems": 8, "items": {
                     "type": "object",
-                    "properties": {"name": {"type": "string"},
-                                   "type": {"type": "string"}},
+                    "properties": {"name": {"type": "string",
+                                            "maxLength": 30},
+                                   "type": {"type": "string",
+                                            "enum": list(FIELD_TYPES)}},
                     "required": ["name", "type"],
                     "additionalProperties": False}},
-                "routes": {"type": "array", "items": {"type": "string"}},
+                "routes": {"type": "array", "maxItems": 8,
+                           "items": {"type": "string", "maxLength": 80}},
                 "uses": {"type": "array", "items": {
                     "type": "object",
                     "properties": {"repo": {"type": "string"},
@@ -208,7 +211,7 @@ ARCH_SCHEMA = _schema("build_architecture", {
                                                "items": {"type": "string"}}},
                     "required": ["repo", "exports"],
                     "additionalProperties": False}},
-                "notes": {"type": "string"},
+                "notes": {"type": "string", "maxLength": 400},
             },
             "required": ["app_name", "crud_prefix", "entity", "fields",
                          "routes", "uses", "notes"],
@@ -221,7 +224,8 @@ GLUE_SCHEMA = _schema("build_glue", {
     "properties": {
         "file": {
             "type": "object",
-            "properties": {"path": {"type": "string"},
+            "properties": {"path": {"type": "string",
+                                    "enum": ["generated/app.py"]},
                            "content": {"type": "string"}},
             "required": ["path", "content"],
             "additionalProperties": False}},
@@ -233,7 +237,8 @@ TESTS_SCHEMA = _schema("build_tests", {
     "properties": {
         "file": {
             "type": "object",
-            "properties": {"path": {"type": "string"},
+            "properties": {"path": {"type": "string",
+                                    "enum": ["test_fused.py"]},
                            "content": {"type": "string"}},
             "required": ["path", "content"],
             "additionalProperties": False}},
@@ -403,12 +408,27 @@ def _messages(step, card, repos, extra=None):
         "security guarantees."
     )
     if step == STEPS[0]:
-        user = json.dumps({"task": "Plan the app.", "idea": card,
-                           "repos": repos}, indent=1)
+        user = json.dumps(
+            {"task": "Plan the app. Field types must be one of str, int, "
+                     "float, bool. crud_prefix is a lowercase path prefix "
+                     "starting with / using only letters, digits, - and _ "
+                     "(e.g. /notes). Field names are snake_case: lowercase "
+                     "letters, digits and _, starting with a letter, max 30 "
+                     "chars. Plan 1-8 fields and 1-8 routes; each route "
+                     "under 80 chars; app_name max 60 chars; entity max 40 "
+                     "chars; notes max 400 chars.",
+             "idea": card, "repos": repos}, indent=1)
     elif step == STEPS[1]:
         user = json.dumps(
             {"task": "Write generated/app.py implementing the plan exactly. "
-                     "Only that one file. The model class uses peewee; the "
+                     "Only that one file. Use the plan's exact field names "
+                     "for the peewee model and JSON payloads. Every route "
+                     "handler returns an explicit (payload, status) tuple: "
+                     "create returns (object with \"id\", 201); list "
+                     "returns (bare JSON array, 200); read/update return "
+                     "(object, 200) or (error object, 404) when missing; "
+                     "delete returns (\"\", 204). "
+                     "The model class uses peewee; the "
                      "database path comes from the FUSED_DB_PATH environment "
                      "variable via peewee's SqliteDatabase - but you may NOT "
                      "import os; instead the runner injects it. Use "
@@ -417,8 +437,12 @@ def _messages(step, card, repos, extra=None):
     else:
         user = json.dumps(
             {"task": "Write test_fused.py: plain-python acceptance checks "
-                     "that import generated.app and exercise the full CRUD "
-                     "contract with microdot's TestClient. No network, no "
+                     "that exercise the full CRUD contract with microdot's "
+                     "TestClient. The dependencies are NOT site-installed: "
+                     "the file's FIRST import must be \"import vendor\" "
+                     "(the vendored shim puts microdot and peewee on "
+                     "sys.path); only AFTER that import microdot, peewee "
+                     "and generated.app. No network, no "
                      "subprocess, no os module.",
              "idea": card, "plan": extra, "repos": repos}, indent=1)
     return [{"role": "system", "content": system},
