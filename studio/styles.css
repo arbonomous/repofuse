@@ -51,7 +51,7 @@ button { font: inherit; cursor: pointer; }
 /* ---------- screens ---------- */
 .screen { display: none; padding: 40px 28px 60px; max-width: 1280px; margin: 0 auto; }
 .screen.active { display: block; animation: fadein .45s ease; }
-@keyframes fadein { from { opacity: 0; transform: translateY(8px); } }
+@keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ---------- setup ---------- */
 .hero { text-align: center; margin: 48px 0 36px; }
