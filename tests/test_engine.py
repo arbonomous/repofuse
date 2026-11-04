@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -154,15 +155,100 @@ class EngineTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.out, "report.json")))
         self.assertEqual(rep["synthesis"]["status"], "pending_no_key")
 
+    @staticmethod
+    def _stub_osv_clean():
+        """Stub the official OSV querybatch read: clean results sized to
+        the query list. Keeps the e2e fully offline while exercising the
+        advisory consumer path."""
+        import urllib.request
+
+        class Resp:
+            def __init__(self, body):
+                self._body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return self._body
+
+        def fake_urlopen(req, timeout=None):
+            n = len(json.loads(req.data.decode())["queries"])
+            return Resp(json.dumps({"results": [{}] * n}).encode())
+
+        return unittest.mock.patch.object(urllib.request, "urlopen",
+                                          fake_urlopen)
+
+    def test_cli_refuses_offline_safety_unknown(self):
+        """Offline the required vuln check is unknown, and unknown blocks:
+        the run must refuse BEFORE vendoring/synthesis, with a written
+        safety.json explaining why."""
+        out3 = os.path.join(self.tmp, "out-cli-offline")
+        os.environ.pop("MODEL_API_KEY", None)
+        os.environ.pop("META_API_KEY", None)
+        rc = cli_main(["run", self.engine_repo, self.iface_repo,
+                       "--out", out3, "--allow-local"])
+        self.assertEqual(rc, 2)
+        verdict = json.load(open(os.path.join(out3, "safety.json")))
+        self.assertEqual(verdict["status"], "unknown")
+        self.assertTrue(verdict["blocking"])
+        self.assertFalse(os.path.exists(os.path.join(out3,
+                                                     "vendor_manifest.json")))
+
+    def test_cli_warn_blocks_spend_until_acknowledged(self):
+        """A warn-level finding lets vendoring leave evidence but blocks
+        synthesis/execution until --ack-safety-warnings is passed."""
+        warn_repo = make_repo(self.tmp, "warnpkg", {
+            "LICENSE": MIT,
+            "README.md": "# warnpkg\n",
+            "core.py": "def f():\n    return 1\n",
+            "setup.py": "from setuptools import setup\n"
+                        "setup(cmdclass={'install': object})\n",
+        })
+        out4 = os.path.join(self.tmp, "out-cli-warn")
+        with self._stub_osv_clean():
+            rc = cli_main(["run", warn_repo, self.iface_repo,
+                           "--out", out4, "--allow-local",
+                           "--safety-network"])
+        self.assertEqual(rc, 2)
+        verdict = json.load(open(os.path.join(out4, "safety.json")))
+        self.assertEqual(verdict["status"], "warn")
+        self.assertTrue(verdict["blocking"])
+        self.assertFalse(verdict["warnings_acknowledged"])
+        # vendored evidence exists, but no synthesis happened
+        self.assertTrue(os.path.exists(os.path.join(out4,
+                                                    "vendor_manifest.json")))
+        self.assertFalse(os.path.exists(os.path.join(out4,
+                                                     "synthesis.json")))
+        out5 = os.path.join(self.tmp, "out-cli-warn-ack")
+        with self._stub_osv_clean():
+            rc = cli_main(["run", warn_repo, self.iface_repo,
+                           "--out", out5, "--allow-local",
+                           "--safety-network", "--ack-safety-warnings"])
+        self.assertEqual(rc, 0)
+        verdict = json.load(open(os.path.join(out5, "safety.json")))
+        self.assertFalse(verdict["blocking"])
+        self.assertTrue(verdict["warnings_acknowledged"])
+        self.assertIn("--ack-safety-warnings",
+                      verdict["acknowledgment"]["via"])
+
     def test_cli_end_to_end(self):
         out2 = os.path.join(self.tmp, "out-cli")
         os.environ.pop("MODEL_API_KEY", None)
         os.environ.pop("META_API_KEY", None)
-        rc = cli_main(["run", self.engine_repo, self.iface_repo,
-                       "--out", out2, "--allow-local"])
+        # A clean advisory read is WARN (empty-result caveat), so the
+        # proceed path requires the explicit acknowledgment flag.
+        with self._stub_osv_clean():
+            rc = cli_main(["run", self.engine_repo, self.iface_repo,
+                           "--out", out2, "--allow-local",
+                           "--safety-network", "--ack-safety-warnings"])
         self.assertEqual(rc, 0)
-        for name in ("ingest.json", "analysis.json", "fuse_manifest.json",
-                     "synthesis.json", "verification.json", "report.json"):
+        for name in ("ingest.json", "analysis.json", "safety.json",
+                     "fuse_manifest.json", "synthesis.json",
+                     "verification.json", "report.json"):
             self.assertTrue(os.path.exists(os.path.join(out2, name)), name)
         synthesis = json.load(open(os.path.join(out2, "synthesis.json")))
         self.assertEqual(synthesis["status"], "pending_no_key")

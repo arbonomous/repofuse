@@ -88,6 +88,87 @@ def analyze_js_file(full, rel):
     return out
 
 
+# Strict PEP 508-ish project name; anything else (tool flags like
+# "--strict-markers", pytest addopts, bare options) is not a dependency.
+_DEP_NAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_DEP_LINE = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*([^;#]*)")
+# A version spec must start with a comparison operator or a wildcard;
+# a bare second word ("bad name") is not a requirement.
+_DEP_SPEC = re.compile(r"^(==|>=|<=|~=|!=|>|<|\*|[0-9])")
+
+
+def _add_dep(deps, raw, via):
+    """Record one dependency iff the raw string is actually a package
+    requirement. Returns True when recorded."""
+    raw = raw.strip().strip("'\"").strip()
+    if not raw or raw.startswith(("-", "#")):
+        return False
+    m = _DEP_LINE.match(raw)
+    if not m or not _DEP_NAME.match(m.group(1)):
+        return False
+    spec = (m.group(3) or "").strip()
+    if spec and not _DEP_SPEC.match(spec):
+        return False
+    deps.setdefault(m.group(1).lower(),
+                    {"spec": spec or "*", "via": via})
+    return True
+
+
+def _pyproject_dependencies(text):
+    """Section-scoped extraction: only the [project] dependencies array
+    and [project.optional-dependencies] values count. Tool sections
+    ([tool.pytest.ini_options] addopts etc.) are NOT dependencies -
+    a 2026-11-04 review found the previous whole-file regex misparsed
+    pytest flags as packages (85 of 99 entries inflated)."""
+    section = None
+    collecting = False
+    optional = False
+    buf = ""
+    out = []
+
+    def flush():
+        nonlocal buf, collecting
+        if "]" in buf:
+            array = buf[:buf.index("]")]
+            for m in re.finditer(r"['\"]([^'\"]+)['\"]", array):
+                out.append(m.group(1))
+        buf = ""
+        collecting = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        sec = re.match(r"^\[\s*([A-Za-z0-9_.-]+)\s*\]", stripped)
+        if sec:
+            flush()
+            section = sec.group(1)
+            optional = section.startswith("project.optional-dependencies")
+            continue
+        if collecting:
+            if optional and re.match(r"^[A-Za-z_.-]+\s*=", stripped):
+                flush()  # next optional-dependency key
+            elif not optional and re.match(r"^[A-Za-z_.-]+\s*=", stripped):
+                flush()  # a new [project] key ends the array
+                continue
+            else:
+                buf += " " + stripped
+                if "]" in stripped:
+                    flush()
+            continue
+        if section == "project" and re.match(r"^dependencies\s*=", stripped):
+            buf = stripped.split("=", 1)[1]
+            collecting = True
+            if "]" in buf:
+                flush()
+        elif optional and re.match(r"^[A-Za-z_.-]+\s*=", stripped):
+            buf = stripped.split("=", 1)[1]
+            collecting = True
+            if "]" in buf:
+                flush()
+    flush()
+    return out
+
+
 def read_dependencies(path, manifests):
     deps = {}
     for rel in manifests:
@@ -97,19 +178,16 @@ def read_dependencies(path, manifests):
                 data = json.load(open(full, encoding="utf-8"))
                 for sec in ("dependencies", "devDependencies"):
                     for name, ver in (data.get(sec) or {}).items():
-                        deps[name] = {"spec": ver, "via": rel, "dev": sec == "devDependencies"}
+                        if _DEP_NAME.match(name):
+                            deps[name] = {"spec": ver, "via": rel,
+                                          "dev": sec == "devDependencies"}
             elif rel.endswith("requirements.txt"):
                 for line in open(full, encoding="utf-8", errors="replace"):
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        m = re.match(r"([A-Za-z0-9_.-]+)\s*(.*)", line)
-                        if m:
-                            deps[m.group(1).lower()] = {"spec": m.group(2).strip() or "*", "via": rel}
+                    _add_dep(deps, line, rel)
             elif rel.endswith("pyproject.toml"):
                 text = open(full, encoding="utf-8", errors="replace").read()
-                for m in re.finditer(r"['\"]([A-Za-z0-9_.-]+)(\s*[^'\"]*)['\"]", text):
-                    deps.setdefault(m.group(1).lower(),
-                                    {"spec": (m.group(2) or "").strip() or "*", "via": rel})
+                for dep in _pyproject_dependencies(text):
+                    _add_dep(deps, dep, rel)
         except (OSError, ValueError):
             continue
     return deps

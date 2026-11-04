@@ -12,9 +12,18 @@ def build_report(out_dir, metas, manifest, synthesis, verification):
     if os.path.exists(tel_path):
         from . import telemetry
         tel = telemetry.read_log(tel_path)
+    safety = None
+    safety_path = os.path.join(out_dir, "safety.json")
+    if os.path.exists(safety_path):
+        try:
+            with open(safety_path, encoding="utf-8") as f:
+                safety = json.load(f)
+        except (OSError, ValueError):
+            safety = {"status": "unknown", "note": "safety.json unreadable"}
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "tool": "repofuse 0.1.0",
+        "safety_qualification": safety,
         "repos": [{
             "url": m["url"], "commit_sha": m["commit_sha"],
             "license_guess": m["license_guess"],

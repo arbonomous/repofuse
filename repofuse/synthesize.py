@@ -158,6 +158,28 @@ def build_architecture_prompt(manifest, metas):
             {"role": "user", "content": json.dumps(user, indent=2)}]
 
 
+def _check_string_caps(arch):
+    """Enforce the schema's maxLength keywords LOCALLY. Provider
+    enforcement of maxLength is unconfirmed (see ARCH_JSON_SCHEMA note),
+    so a model that ignores the cap must still be refused. This only makes
+    the validator match the declared schema; it never loosens it."""
+    def over(value, cap, where):
+        if isinstance(value, str) and len(value) > cap:
+            raise BudgetExceeded(f"architecture {where} = {len(value)} "
+                                 f"chars > maxLength {cap}")
+    opp = arch.get("arbitrage_opportunity")
+    over(opp, 400, "arbitrage_opportunity")
+    for repo, exports in (arch.get("source_exports") or {}).items():
+        if isinstance(exports, list):
+            for i, e in enumerate(exports):
+                over(e, ARCH_MAX_STR, f"source_exports[{repo}][{i}]")
+    for key in ("required_shims", "risks"):
+        val = arch.get(key)
+        if isinstance(val, list):
+            for i, e in enumerate(val):
+                over(e, ARCH_MAX_STR, f"{key}[{i}]")
+
+
 def validate_architecture_size(arch):
     """Reject a parsed architecture manifest that ignored the output
     budget: bloat here inflates the glue prompt input. Raises
@@ -173,6 +195,7 @@ def validate_architecture_size(arch):
         val = arch.get(key)
         if isinstance(val, list) and len(val) > cap:
             raise BudgetExceeded(f"architecture {key} = {len(val)} > {cap}")
+    _check_string_caps(arch)
     blob = json.dumps(arch)
     if len(blob) > ARCH_OUTPUT_CHAR_BUDGET:
         raise BudgetExceeded(
