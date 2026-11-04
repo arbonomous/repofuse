@@ -136,8 +136,9 @@ class EngineTest(unittest.TestCase):
         prompt_path = os.path.join(self.out, "prompts", "architecture-manifest.json")
         self.assertTrue(os.path.exists(prompt_path))
         bundle = json.load(open(prompt_path))
-        self.assertEqual(bundle[0]["role"], "developer")
-        self.assertIn("arbitrage_opportunity", bundle[1]["content"])
+        # V31r4: staged artifact is the exact full request payload
+        self.assertEqual(bundle["messages"][0]["role"], "developer")
+        self.assertIn("arbitrage_opportunity", bundle["messages"][1]["content"])
 
     def test_model_client_refuses_without_key(self):
         with self.assertRaises(model_api.ModelUnavailable):

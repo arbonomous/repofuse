@@ -399,3 +399,137 @@ def test_rehydrated_transitional_status_becomes_interrupted(tmp_path,
     for rid in ("run-0123456789abcde0", "run-0123456789abcde1",
                 "run-ffffffffffffffff"):
         serve._runs.pop(rid, None)
+
+
+# ---------------- V31r4: exact request-payload retention + interrupted
+# transition guard ----------------
+
+_V31R4_MANIFEST = {"repos": [{"slug": "a", "role": "interface",
+                              "exports": ["App"], "routes": [],
+                              "dependency_count": 0}],
+                   "boundary_candidates": [], "conflicts": []}
+_V31R4_METAS = [{"slug": "a", "readme_excerpt": "", "tree": []}]
+
+
+def _v31r4_fake_provider(captured):
+    def fake_count(messages, **k):
+        return max(1, sum(len(m["content"]) for m in messages) // 4)
+
+    def fake_chat(messages, **k):
+        captured.append((messages, k))
+        joined = " ".join(m["content"] for m in messages)
+        if "Reply with the word" in joined:
+            content = "ready"
+        elif "architecture bridge manifest" in joined:
+            content = json.dumps({
+                "source_exports": {"a": ["App"]},
+                "arbitrage_opportunity": "x",
+                "required_shims": [], "bridge": [], "risks": []})
+        elif "adapter shim code" in joined:
+            content = json.dumps({"app_adapter.py": "VALUE = 1\n"})
+        elif "integration test file" in joined:
+            content = json.dumps({"test_fused.py": "import unittest\n"})
+        else:
+            raise AssertionError("unexpected prompt in fake provider")
+        return {"content": content, "model": "muse-spark-1.3",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                "latency_ms": 1, "finish_reason": "stop"}
+
+    return fake_count, fake_chat
+
+
+def test_every_step_request_payload_staged_exactly(tmp_path, monkeypatch):
+    """V31r4: ALL four step request payloads (probe, architecture, glue,
+    test) are retained under prompts/ BEFORE the count preflight, and the
+    staged bytes equal build_payload(messages, exact call params) - the
+    single constructor the live send path also uses."""
+    from repofuse import model_api, synthesize as synth_mod
+    captured = []
+    fake_count, fake_chat = _v31r4_fake_provider(captured)
+    monkeypatch.setattr(model_api, "count_tokens", fake_count)
+    monkeypatch.setattr(model_api, "chat_completion", fake_chat)
+    monkeypatch.setenv("MODEL_API_KEY", "offline-contract-test-key")
+    res = synth_mod.run_synthesis(dict(_V31R4_MANIFEST),
+                                  list(_V31R4_METAS), str(tmp_path),
+                                  env=None)
+    assert res["status"] == "completed", res
+    steps = ["probe", "architecture-manifest", "glue-synthesis",
+             "test-synthesis"]
+    assert len(captured) == 4
+    for (messages, kw), step in zip(captured, steps):
+        staged = json.loads(
+            (tmp_path / "prompts" / (step + ".json")).read_text())
+        params = {k: kw[k] for k in
+                  ("max_tokens", "reasoning_effort", "response_format")
+                  if k in kw and kw[k] is not None}
+        assert staged == model_api.build_payload(messages, **params), step
+
+
+def test_free_path_stages_exact_arch_payload_without_key(tmp_path,
+                                                         monkeypatch):
+    """V31r4: the no-key free path still stages the architecture payload,
+    now in exact-send format (model/messages/max_tokens/controls)."""
+    from repofuse import synthesize as synth_mod
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("META_API_KEY", raising=False)
+    res = synth_mod.run_synthesis(dict(_V31R4_MANIFEST),
+                                  list(_V31R4_METAS), str(tmp_path),
+                                  env=None)
+    assert res["status"] == "pending_no_key", res
+    staged = json.loads(
+        (tmp_path / "prompts" / "architecture-manifest.json").read_text())
+    assert staged["model"]
+    assert staged["max_tokens"] == synth_mod.RUN_ENVELOPE[
+        "max_output_tokens"]
+    assert staged["reasoning_effort"] == "minimal"
+    assert staged["response_format"]["type"] == "json_schema"
+    assert any("architecture bridge manifest" in m["content"]
+               for m in staged["messages"])
+
+
+def test_interrupted_spend_free_guard(tmp_path, monkeypatch):
+    """V31r4: an interrupted run may start a general build only when its
+    durable record proves zero provider contact (no reservations, no
+    count calls, no retained responses); anything else refuses."""
+    monkeypatch.setattr(serve, "RUNS", str(tmp_path))
+    fusion = tmp_path / "run-aaaaaaaabbbbcccc-fusion"
+    fusion.mkdir()
+    rid = "run-aaaaaaaabbbbcccc"
+    assert serve._interrupted_run_is_spend_free(rid) is True
+    (fusion / "budget.json").write_text(json.dumps(
+        {"calls": [{"step": "probe", "actual": None}]}))
+    assert serve._interrupted_run_is_spend_free(rid) is False
+    (fusion / "budget.json").write_text(json.dumps(
+        {"calls": [], "count_calls": [{"step": "probe"}]}))
+    assert serve._interrupted_run_is_spend_free(rid) is False
+    (fusion / "budget.json").unlink()
+    raw = fusion / "raw_responses"
+    raw.mkdir()
+    (raw / "probe.json").write_text("{}")
+    assert serve._interrupted_run_is_spend_free(rid) is False
+
+
+def test_interrupted_guard_fails_closed_on_corrupt_ledger(tmp_path,
+                                                          monkeypatch):
+    """V31r5: corrupt or non-ledger budget.json is ambiguity, not absence
+    - the guard fails closed. Same for an unreadable ledger/dir."""
+    monkeypatch.setattr(serve, "RUNS", str(tmp_path))
+    fusion = tmp_path / "run-aaaaaaaabbbbcccc-fusion"
+    fusion.mkdir()
+    rid = "run-aaaaaaaabbbbcccc"
+    # corrupt JSON
+    (fusion / "budget.json").write_text("{not json")
+    assert serve._interrupted_run_is_spend_free(rid) is False
+    # well-formed but not a ledger object
+    (fusion / "budget.json").write_text(json.dumps([1, 2, 3]))
+    assert serve._interrupted_run_is_spend_free(rid) is False
+    # unreadable ledger file (PermissionError is OSError, not FileNotFound)
+    (fusion / "budget.json").write_text(json.dumps({"calls": []}))
+    os.chmod(fusion / "budget.json", 0)
+    try:
+        assert serve._interrupted_run_is_spend_free(rid) is False
+    finally:
+        os.chmod(fusion / "budget.json", 0o600)
+    # genuinely absent again -> spend-free
+    (fusion / "budget.json").unlink()
+    assert serve._interrupted_run_is_spend_free(rid) is True

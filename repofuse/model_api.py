@@ -91,6 +91,20 @@ def _post(url, payload, key, timeout):
         raise ModelCallError(f"Model API returned non-JSON: {e}")
 
 
+
+def build_payload(messages, model=DEFAULT_MODEL, max_tokens=4096,
+                  reasoning_effort=None, response_format=None):
+    """Single source for the exact request body POSTed to the provider.
+    Both the live send path and the pre-send staging/retention path use
+    this, so staged bytes == sent bytes by construction, not by audit."""
+    payload = {"model": model, "messages": messages,
+               "max_tokens": max_tokens}
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    if response_format is not None:
+        payload["response_format"] = response_format
+    return payload
+
 def count_tokens(messages, model=DEFAULT_MODEL, timeout=30, env=None):
     """Provider-measured input token count. Returns int or None.
 
@@ -100,7 +114,7 @@ def count_tokens(messages, model=DEFAULT_MODEL, timeout=30, env=None):
     key = _api_key(env)
     if not key:
         return None
-    payload = {"model": model, "messages": messages, "max_tokens": 1}
+    payload = build_payload(messages, model=model, max_tokens=1)
     try:
         body = _post(COUNT_TOKENS_URL, payload, key, timeout)
     except ModelCallError:
@@ -134,11 +148,9 @@ def chat_completion(messages, model=DEFAULT_MODEL, max_tokens=4096,
             "MODEL_API_KEY (or META_API_KEY) is not set; model call refused.")
     if max_tokens > 4096:
         raise ModelCallError(f"max_tokens {max_tokens} exceeds hard cap 4096")
-    payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
-    if reasoning_effort is not None:
-        payload["reasoning_effort"] = reasoning_effort
-    if response_format is not None:
-        payload["response_format"] = response_format
+    payload = build_payload(messages, model=model, max_tokens=max_tokens,
+                            reasoning_effort=reasoning_effort,
+                            response_format=response_format)
     started = time.monotonic()
     body = _post(base_url.rstrip("/") + "/chat/completions", payload, key,
                  timeout)

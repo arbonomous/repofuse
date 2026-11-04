@@ -135,7 +135,8 @@ def test_prepare_bundle_for_picked_idea(tmp_path, monkeypatch):
     bundle = json.loads(
         (tmp_path / "runs" / f"{run['run_id']}-fusion" / "prompts"
          / "architecture-manifest.json").read_text())
-    payload = json.loads(bundle[1]["content"])
+    # V31r4: staged artifact is the exact full request payload
+    payload = json.loads(bundle["messages"][-1]["content"])
     assert "Signing playground" in payload["user_intent"]
     assert "Sign and verify payloads" in payload["user_intent"]
     assert "BadData" in payload["user_intent"]

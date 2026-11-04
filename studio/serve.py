@@ -465,6 +465,38 @@ def _general_review_or_verify(run, run_id):
         run["general_verify"] = res
 
 
+
+def _interrupted_run_is_spend_free(run_id):
+    """Fail-closed proof that an 'interrupted' general run never reached
+    a provider request, so a build start is NOT a retry of a paid stage.
+    True only when the run's fusion dir holds zero budget reservations/
+    commits AND zero retained raw responses. Any ambiguity -> False."""
+    fusion_root = os.path.join(RUNS, run_id + "-fusion")
+    try:
+        with open(os.path.join(fusion_root, "budget.json"),
+                  encoding="utf-8") as f:
+            budget = json.load(f)
+    except FileNotFoundError:
+        pass  # genuinely absent: nothing reserved or committed
+    except (OSError, ValueError):
+        return False  # unreadable or corrupt: ambiguity, fail closed
+    else:
+        if not isinstance(budget, dict):
+            return False  # well-formed but not a ledger: fail closed
+        if budget.get("calls") or budget.get("count_calls"):
+            return False
+    raw_dir = os.path.join(fusion_root, "raw_responses")
+    try:
+        entries = os.listdir(raw_dir)
+    except FileNotFoundError:
+        pass  # genuinely absent: no retained responses
+    except OSError:
+        return False  # unreadable dir: ambiguity, fail closed
+    else:
+        if entries:
+            return False
+    return True
+
 def run_general_build(run_id):
     """GENERAL chosen-repo build route: the core staged synthesis over
     THIS run's vendored tree, steered by the picked idea. Disarmed
@@ -1827,10 +1859,20 @@ class Handler(BaseHTTPRequestHandler):
             if not run:
                 return self._json(404, {"error": "unknown run"})
             if run["status"] not in ("ideas_ready",
-                                     "stopped_at_paid_boundary"):
+                                     "stopped_at_paid_boundary",
+                                     "interrupted"):
                 return self._json(
                     409, {"error": f"run is {run['status']}, not ready "
                                    "for a general build"})
+            if (run["status"] == "interrupted"
+                    and not _interrupted_run_is_spend_free(run_id)):
+                return self._json(
+                    409, {"error": "run is interrupted and its ledger "
+                                   "shows a reserved or charged stage; a "
+                                   "fresh start would risk a duplicate "
+                                   "paid call, which the no-retries rule "
+                                   "forbids - this run needs independent "
+                                   "review, not a refire"})
             if _active_runs >= MAX_ACTIVE_RUNS:
                 return self._json(429, {"error": "too many active runs"})
             gate_ok, gate_why = spend_safety_gate(

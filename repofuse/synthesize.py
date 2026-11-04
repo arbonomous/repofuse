@@ -347,6 +347,20 @@ class TruncatedOutput(RuntimeError):
     retained under raw_responses/ before this is raised."""
 
 
+
+def _stage_request(out_dir, step, payload):
+    """Durably retain the EXACT request payload (bytes-identical to what
+    will be POSTed, built by model_api.build_payload) BEFORE the count
+    preflight fires, for every step - probe, architecture, glue, test.
+    Atomic tmp+replace; step names are fixed code constants, never
+    model-derived. This is the review/audit record of what was sent."""
+    prompts_dir = os.path.join(out_dir, "prompts")
+    os.makedirs(prompts_dir, exist_ok=True)
+    tmp = os.path.join(prompts_dir, step + ".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, os.path.join(prompts_dir, step + ".json"))
+
 def _retain_raw_response(out_dir, step, resp):
     """Durably retain the paid response BEFORE any parsing, so a parse or
     truncation failure never destroys output the user paid for. Step names
@@ -381,6 +395,11 @@ def call_gated(step, messages, out_dir, budget, env=None,
     total_chars = sum(len(m["content"]) for m in messages)
     if total_chars > MAX_CONTEXT_CHARS:
         raise BudgetExceeded(f"{step}: {total_chars} chars exceeds bound")
+    _stage_request(out_dir, step,
+                   model_api.build_payload(
+                       messages, max_tokens=max_tokens,
+                       reasoning_effort=reasoning_effort,
+                       response_format=response_format))
     budget.record_count(step)  # durable checkpoint BEFORE the count request
     measured = model_api.count_tokens(messages, env=env)
     if measured is None:
@@ -423,6 +442,8 @@ def run_probe(out_dir, budget, env=None):
     universal relationship. Probe failure aborts the run and must never
     trigger heal."""
     msgs = [{"role": "user", "content": "Reply with the word: ready"}]
+    _stage_request(out_dir, "probe", model_api.build_payload(msgs,
+                                                             max_tokens=1))
     budget.record_count("probe")  # durable checkpoint BEFORE the count request
     measured = model_api.count_tokens(msgs, env=env)
     if measured is None:
@@ -459,12 +480,18 @@ def run_synthesis(manifest, metas, out_dir, env=None, intent=None,
     budget = Budget(os.path.join(out_dir, "budget.json"),
                     envelope_path=envelope_path)
 
-    prompts = {"architecture-manifest":
-               build_architecture_prompt(manifest, metas, intent=intent)}
-    for name, msgs in prompts.items():
-        with open(os.path.join(prompts_dir, name + ".json"), "w",
-                  encoding="utf-8") as f:
-            json.dump(msgs, f, indent=2)
+    arch_msgs = build_architecture_prompt(manifest, metas, intent=intent)
+    prompts = {"architecture-manifest": arch_msgs}
+    # Free staging: retain the EXACT architecture payload (bytes-identical
+    # to a later send) even when no key exists - "prepared, NOT sent".
+    # A later armed call re-stages identical bytes via build_payload.
+    _stage_request(out_dir, "architecture-manifest",
+                   model_api.build_payload(
+                       arch_msgs,
+                       max_tokens=RUN_ENVELOPE["max_output_tokens"],
+                       reasoning_effort=PIPELINE_REASONING_EFFORT,
+                       response_format=_rf_json_schema(
+                           "architecture_manifest", ARCH_JSON_SCHEMA)))
 
     if not model_api.have_model_key(env):
         return {"status": "pending_no_key",
