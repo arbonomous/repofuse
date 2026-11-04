@@ -13,16 +13,20 @@ import os
 import time
 
 RUN_ENVELOPE = {
-    # HISTORICAL, CLOSED: the 2026-11-04 run under its 6/6 envelope
-    # (original 5+5 grant + a +1/+1 top-up) actually consumed 4 charged
-    # (2 committed probes 14/1 each, 1 interrupted auto-heal reservation
-    # with unknowable disposition preserved as consumed, 1 committed
-    # architecture-manifest 4879/4096 truncated) + 4 count, then FAILED
-    # TERMINALLY at arch. That ledger is preserved and never reset,
-    # renamed, or reused; step names probe/auto-heal/architecture-manifest
-    # are burned in it. Any future attempt is a FRESH run under fresh
-    # user authority with a NEW budget ledger. These constants are
-    # defaults for a fresh run, not authority.
+    # HISTORICAL, CLOSED: the only pre-V31 paid usage on disk is the
+    # 2026-11-04 overnight build-flow run (ledgers preserved:
+    # studio/paid-build/build-ledger.json, 3 charged committed totaling
+    # 3657 in / 2240 out + 3 count; recovery attempt-2 ledger, 1 charged
+    # committed 1082/526 + 1 count; recovery attempt-1 ledger, 1
+    # interrupted reservation never committed) plus the 2026-11-04
+    # run-5c4dae68fed8de0f (4 charged, actual 6627 in / 4770 out, + 4
+    # count; ledger in that run's own directory). An earlier draft of
+    # this comment described a 6/6 envelope with different figures; no
+    # ledger supporting that description exists, so those figures are
+    # retracted. Ledgers are preserved and never reset, renamed, or
+    # reused. Any future attempt is a FRESH run under fresh user
+    # authority with a NEW budget ledger. These constants are defaults
+    # for a fresh run, not authority.
     "max_calls": 6,
     # provider count_tokens checks, tracked durably like charged calls.
     "max_count_calls": 6,

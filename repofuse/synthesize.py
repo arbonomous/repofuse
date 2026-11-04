@@ -24,7 +24,7 @@ MAX_GEN_FILES = 20
 MAX_GEN_FILE_BYTES = 200 * 1024
 MAX_GEN_TOTAL_BYTES = 1024 * 1024
 _GENERATED_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,63}\.py$")
-_GENERATED_SLOTS = {"test_fused.py"}  # single writable test slot
+_GENERATED_SLOTS = {"test_fused.py", "__init__.py"}  # test slot; the package marker is infrastructure-written, never model-written
 _GLUE_DIR = "generated"               # glue code lives only here
 
 
@@ -218,10 +218,24 @@ def build_glue_prompt(manifest, architecture, intent=None):
     user = {
         "task": "Write the adapter shim code connecting the repos per the "
                 "architecture manifest. Return a JSON object mapping snake_case "
-                ".py file names to full file contents. Input repos are "
-                "vendored under vendor/<slug>/ with an import shim at "
-                "vendor/__init__.py - import their real modules via that shim. "
-                "Only standard library plus the vendored repos' own code.",
+                ".py file names to full file contents. Hard requirements: "
+                "(1) exactly one file named app.py defines a top-level WSGI "
+                "callable named app(environ, start_response) - it is the "
+                "serving entrypoint; (2) modules import each other "
+                "package-qualified as `from generated import <name>` "
+                "(infrastructure adds generated/__init__.py; never write it "
+                "yourself, never use bare sibling imports); (3) import "
+                "vendored repo code as `from vendor import <slug>` - the shim "
+                "binds the real packages; (4) the app must be usable from a "
+                "browser: at least one route that creates or mutates a "
+                "resource (for example via POST) plus the routes needed to "
+                "view and share the result; (5) read any needed signing "
+                "secret from os.environ['REPOFUSE_APP_SECRET'] - serving "
+                "infrastructure provides a fresh random value per process, "
+                "never hardcode a secret; (6) only standard library plus "
+                "the vendored repos' own code. Input repos are vendored "
+                "under vendor/<slug>/ with an import shim at "
+                "vendor/__init__.py.",
         "architecture": architecture,
         "conflicts": manifest["conflicts"],
         "acceptance_criteria": manifest.get("acceptance_criteria", []),
@@ -237,10 +251,16 @@ def build_test_prompt(manifest, architecture, glue_contents, intent=None):
     user = {
         "task": "Write an integration test file (test_fused.py, stdlib "
                 "unittest). Return JSON: {\"test_fused.py\": \"...\"}. "
-                "Requirements: import and call real modules from the vendored "
-                "input repos under vendor/, not only the glue; the tests must "
-                "fail if the glue is deleted; test only behavior present in "
-                "the glue source below.",
+                "Requirements: import vendored code as `from vendor import "
+                "<slug>` and glue modules as `from generated import <name>`; "
+                "import vendor FIRST so its shim is active; set "
+                "os.environ['REPOFUSE_APP_SECRET'] to a test value before "
+                "importing the glue; import and call real exports from the "
+                "vendored input repos, not only the glue; drive the app "
+                "callable in generated/app.py through a full create-then-use "
+                "flow with a fake WSGI environ; the tests must fail if the "
+                "glue is deleted; test only behavior present in the glue "
+                "source below.",
         "architecture": architecture,
         "glue_source": {k: v[:20000] for k, v in glue_contents.items()},
         "user_intent": _bounded_intent(intent),
@@ -485,6 +505,16 @@ def run_synthesis(manifest, metas, out_dir, env=None, intent=None,
                                slot="glue")
         result["files_written"].extend(written)
         result["steps"]["glue-synthesis"] = "done"
+        if written:
+            # Infrastructure package marker: never model-written (the glue
+            # slot refuses __init__.py), never counted as generation output;
+            # it lands inside the tree and is attested later like any byte.
+            _init = os.path.join(fusion_dir, _GLUE_DIR, "__init__.py")
+            if not os.path.exists(_init):
+                with open(_init, "w", encoding="utf-8") as _f:
+                    _f.write("# RepoFuse infrastructure: generated/ is a "
+                             "package; glue modules import each other "
+                             "package-qualified.\n")
 
         glue_contents = {}
         for rel in written:

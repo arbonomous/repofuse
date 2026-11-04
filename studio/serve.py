@@ -103,12 +103,82 @@ def is_recorded_pair(a, b):
     return frozenset((_norm(a), _norm(b))) in RECORDED
 
 
+def _run_state_path(run_id):
+    return os.path.join(RUNS, f"{run_id}-state.json")
+
+
+def _persist_run_locked(run):
+    """Persist resumable run state; caller holds _lock. Persisted state is
+    INFORMATIONAL ONLY: the spend, execution and serving gates re-read
+    their own out-of-band sources on every call (ack file, attestation
+    file and its whole-tree byte binding, safety verdict hash, envelope
+    file, budget ledger), so a stale or tampered state file cannot
+    manufacture an ack, authority, or reuse of an exhausted envelope.
+    Nothing secret is ever part of run state. Atomic via tmp + replace;
+    best-effort, since the gates never depend on it."""
+    run_id = run.get("run_id")
+    if not run_id or not RUN_ID.match(run_id):
+        return
+    blob = {"run_id": run_id,
+            "status": run.get("status"),
+            "repo_a": run.get("repo_a"),
+            "repo_b": run.get("repo_b"),
+            "recorded_pair": bool(run.get("recorded_pair")),
+            "vendor": run.get("vendor"),
+            "safety": run.get("safety"),
+            "events": run.get("events", [])[-200:]}
+    try:
+        os.makedirs(RUNS, exist_ok=True)
+        tmp = _run_state_path(run_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(blob, f)
+        os.replace(tmp, _run_state_path(run_id))
+    except OSError:
+        pass
+
+
+def _rehydrate_runs():
+    """Reload persisted run state at startup so a server restart does not
+    strand a reviewed run in an in-memory-only state. Rehydrated runs are
+    marked "rehydrated" and carry no authority: the gates re-validate
+    ack, attestation, contract, envelope and budget from their own files
+    before any execution or spend. Events are capped at persist time, so
+    a rehydrated run whose pin-carrying events aged out simply fails its
+    gates closed - the safe direction."""
+    if not os.path.isdir(RUNS):
+        return
+    for fn in sorted(os.listdir(RUNS)):
+        if not fn.endswith("-state.json"):
+            continue
+        rid = fn[:-len("-state.json")]
+        if not RUN_ID.match(rid):
+            continue
+        try:
+            with open(os.path.join(RUNS, fn), encoding="utf-8") as f:
+                blob = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(blob, dict):
+            continue
+        with _lock:
+            _runs[rid] = {"run_id": rid,
+                          "status": blob.get("status", "failed"),
+                          "events": blob.get("events", []),
+                          "repo_a": blob.get("repo_a"),
+                          "repo_b": blob.get("repo_b"),
+                          "recorded_pair": bool(blob.get("recorded_pair")),
+                          "vendor": blob.get("vendor"),
+                          "safety": blob.get("safety"),
+                          "rehydrated": True}
+
+
 def emit(run, stage, kind, text, data=None):
     ev = {"ts": time.time(), "stage": stage, "kind": kind, "text": text}
     if data:
         ev["data"] = data
     with _lock:
         run["events"].append(ev)
+        _persist_run_locked(run)
 
 
 def _load_pipeline():
@@ -1093,17 +1163,27 @@ def spend_safety_gate(run):
     if status in ("fail", "unknown"):
         return False, (f"safety verdict is {status}: a required check "
                        "failed or could not run; spending is refused")
-    if status != "warn":
+    # Reviewer hardening (V31r2): a REHYDRATED run's verdict came from a
+    # persisted state file, which makes a forged pass file-reachable; so a
+    # rehydrated run needs the independent bound acknowledgment for EVERY
+    # verdict status, exactly like warn. Live runs are unchanged.
+    rehydrated = bool((run or {}).get("rehydrated"))
+    if status != "warn" and not rehydrated:
         return True, "safety verdict pass"
     ack_path = os.path.join(ACKS, f"{run.get('run_id', '')}.json")
     try:
         with open(ack_path, encoding="utf-8") as f:
             ack = json.load(f)
     except (OSError, ValueError):
-        return False, ("safety verdict is warn: this build is paused "
-                       "until an independent reviewer signs off in "
-                       "writing for this exact run and its pinned "
-                       "commits; the browser cannot grant that sign-off")
+        if status == "warn":
+            return False, ("safety verdict is warn: this build is paused "
+                           "until an independent reviewer signs off in "
+                           "writing for this exact run and its pinned "
+                           "commits; the browser cannot grant that sign-off")
+        return False, ("run state was rehydrated from disk, so its safety "
+                       "verdict is only as trustworthy as that file: an "
+                       "independent bound acknowledgment is required for "
+                       "every rehydrated run regardless of verdict status")
     if ack.get("run_id") != run.get("run_id"):
         return False, "acknowledgment run_id mismatch"
     if ack.get("commits") != pins:
@@ -1112,7 +1192,9 @@ def spend_safety_gate(run):
     if ack.get("verdict_hash") != _verdict_hash(verdict):
         return False, ("acknowledgment does not match the current "
                        "verdict bytes; re-review required")
-    return True, "warn acknowledged by independent reviewer record"
+    if status == "warn":
+        return True, "warn acknowledged by independent reviewer record"
+    return True, "rehydrated run acknowledged by independent reviewer record"
 
 
 def _load_approval(run_id):
@@ -1339,7 +1421,7 @@ def resume_build(run_id):
             st = _load_build_state(run_id)
             if st is None:
                 return "unknown", None
-            run = {"status": st["status"], "events": [],
+            run = {"run_id": run_id, "status": st["status"], "events": [],
                    "repo_a": None, "repo_b": None, "recorded_pair": False}
             _runs[run_id] = run
             restored = True
@@ -1654,8 +1736,8 @@ class Handler(BaseHTTPRequestHandler):
             if _active_runs >= MAX_ACTIVE_RUNS:
                 return self._json(429, {"error": "too many active runs"})
             run_id = f"run-{secrets.token_hex(8)}"
-            _runs[run_id] = {"status": "running", "events": [],
-                             "repo_a": a, "repo_b": b,
+            _runs[run_id] = {"run_id": run_id, "status": "running",
+                             "events": [], "repo_a": a, "repo_b": b,
                              "recorded_pair": is_recorded_pair(a, b)}
             _active_runs += 1
         threading.Thread(target=run_pipeline,
@@ -1977,6 +2059,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    _rehydrate_runs()
     print(f"RepoFuse Studio on http://127.0.0.1:{PORT} "
           f"(fused app: {FUSED_APP})")
     try:

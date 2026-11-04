@@ -18,6 +18,12 @@ import re
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,5}$")
 _OBJECT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,60}$")
 _PATH = re.compile(r"^/[A-Za-z0-9_/.-]{0,120}$")
+_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+# Reviewer-mandated allowlist: even a well-formed env NAME is not enough.
+# Only these variables may be declared as spawn secrets, so a contract can
+# never shadow execution-control variables (PATH, PYTHONPATH, LD_PRELOAD,
+# HOME, MODEL_API_KEY, ...) with runner-generated values.
+ALLOWED_SPAWN_SECRETS = frozenset({"REPOFUSE_APP_SECRET"})
 
 CONTRACT_NAME = "serving.json"
 
@@ -62,9 +68,33 @@ def load_contract(fusion_dir):
     if c.get("env"):
         return False, ("serving contract v1 passes NO custom environment; "
                        "the child always gets the scrubbed allowlist")
+    # spawn_secrets is the ONLY secret mechanism: it names env vars whose
+    # values the runner generates fresh per spawn (os.urandom(32).hex()).
+    # No literal secret material can EVER appear in a contract: the only
+    # accepted value is the generator name "random-hex-32", so the contract
+    # stays safe to attest, pin, and commit inside the tree.
+    spawn_secrets = c.get("spawn_secrets") or {}
+    if not isinstance(spawn_secrets, dict):
+        return False, "serving contract spawn_secrets must be an object"
+    for k, v in spawn_secrets.items():
+        if not (isinstance(k, str) and _ENV_NAME.match(k)):
+            return False, (f"serving contract spawn_secrets key {k!r} is not "
+                           "a plain uppercase env name")
+        if k not in ALLOWED_SPAWN_SECRETS:
+            return False, (f"serving contract spawn_secrets key {k!r} is not "
+                           "on the allowlist (only "
+                           + ", ".join(sorted(ALLOWED_SPAWN_SECRETS))
+                           + "); refusing to let a contract shadow "
+                           "execution-control environment")
+        if v != "random-hex-32":
+            return False, ("serving contract spawn_secrets values may ONLY "
+                           "name the generator 'random-hex-32' (a fresh "
+                           "per-spawn secret); literal secret material is "
+                           "never allowed in a contract")
     return True, {"module": module, "app_object": obj,
                   "readiness_path": readiness,
-                  "readiness_status": status}
+                  "readiness_status": status,
+                  "spawn_secrets": dict(spawn_secrets)}
 
 
 def runner_snippet(contract, listen_fd):
@@ -79,8 +109,16 @@ def runner_snippet(contract, listen_fd):
     is what makes a fully network-unshared namespace servable."""
     mod = contract["module"]
     obj = contract["app_object"]
+    # Fresh per-spawn secrets: generated HERE from os.urandom at process
+    # start, present only in the contained child's environment. The contract
+    # names only the variables; no secret value exists at rest anywhere.
+    sec = contract.get("spawn_secrets") or {}
+    secret_lines = "".join(
+        f"_os.environ[{k!r}] = _os.urandom(32).hex()\n" for k in sorted(sec))
     return ("import ctypes as _c\n"
             "_c.CDLL(None).prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG=SIGKILL\n"
+            "import os as _os\n"
+            + secret_lines +
             "import socket as _s\n"
             "from wsgiref.simple_server import (\n"
             "    WSGIServer as _W, WSGIRequestHandler as _H)\n"
@@ -176,9 +214,13 @@ def derive_contract(fusion_dir):
     # WSGI-shaped is a HYPOTHESIS the reviewer attests with the tree; if
     # the object is not a WSGI callable, serving fails honestly at the
     # readiness probe, never silently.
+    # REPOFUSE_APP_SECRET is the one standardized per-spawn secret: apps
+    # that sign anything read it from the environment (the generation
+    # contract instructs this); apps that do not need it ignore it.
     contract = {"version": 1, "kind": "python-wsgi",
                 "module": f"generated.{found[0]}", "app_object": "app",
-                "readiness_path": "/", "readiness_status": 200}
+                "readiness_path": "/", "readiness_status": 200,
+                "spawn_secrets": {"REPOFUSE_APP_SECRET": "random-hex-32"}}
     with open(os.path.join(fusion_dir, CONTRACT_NAME), "w",
               encoding="utf-8") as f:
         json.dump(contract, f, indent=2)
