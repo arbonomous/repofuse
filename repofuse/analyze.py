@@ -219,7 +219,9 @@ def analyze(meta):
     routes = [r for f in py_files + js_files for r in f["routes"]]
     deps = read_dependencies(path, meta.get("manifests", []))
     env, ports = detect_env_and_ports(path)
+    from .api_evidence import package_api
     return {
+        "api_evidence": package_api(path, meta["slug"]),
         "slug": meta["slug"],
         "exports": exports,
         "routes": routes,

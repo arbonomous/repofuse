@@ -26,6 +26,16 @@
     <p class="hero-sub">Paste two GitHub repos and describe what you want. Live mode really clones, pins and analyzes them now, then stops before the paid model stages. Replay the recorded run to watch the full pipeline - original AI output, its failure, and the labeled repair.</p>
   </div>
   <div class="setup-card">
+    <details class="local-connect-card">
+      <summary>Meta connection for new builds</summary>
+      <p>Enter a Meta API key only here on this local Studio page. It stays in Studio process memory, is not saved to disk or sent in review packages, and clears when Studio restarts. Connecting makes no API request and does not start a build.</p>
+      <label class="field-label" for="local-meta-key">Meta API key</label>
+      <input id="local-meta-key" type="password" autocomplete="off" spellcheck="false" placeholder="Local session only">
+      <button id="local-meta-connect" class="replay-btn">Connect for this session</button>
+      <button id="local-meta-disconnect" class="ghost-btn">Disconnect and cancel armed run</button>
+      <p id="local-meta-status" class="setup-note">Checking local session...</p>
+      <p class="setup-note">New builds stop for independent review. Runtime support is Python WSGI in Linux containment, without network access. Arbitrary repositories, frontend stacks and external services are not automatically supported. Call limits do not prevent card overage when credits expire or billing is delayed.</p>
+    </details>
     <label class="field-label">Repository A</label>
     <div class="repo-input"><span class="gh-icon">&#9679;</span>
       <input id="repo-a" value="https://github.com/miguelgrinberg/microdot" spellcheck="false">
@@ -114,6 +124,6 @@ python3 -c "import assistant_ext; from generated.app import app; app.run()"
 </div>
 
 <script src="replay-data.js"></script>
-<script src="app.js?v=36"></script>
+<script src="app.js?v=38"></script>
 </body>
 </html>

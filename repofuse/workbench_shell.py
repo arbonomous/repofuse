@@ -1,0 +1,38 @@
+"""Assistant-authored fixed HTTP/UI shell. Model integration is separate untrusted code.
+No shell import into generator process. This file is copied as attested generated/app.py.
+"""
+import json,math
+from generated import integration
+HTML_PAGE='''<!doctype html><html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>RepoFuse Workbench</title><style>body{font:16px system-ui;max-width:840px;margin:32px auto;padding:16px;background:#101827;color:#edf2ff}textarea{box-sizing:border-box;width:100%;height:200px;background:#1c2940;color:inherit;padding:12px}button{padding:10px 20px;margin:12px 0}pre{white-space:pre-wrap;background:#1c2940;padding:16px}#error{color:#ffb5b5}</style><h1 id=title>RepoFuse Workbench</h1><p id=description>Assistant-authored interface. Model-generated integration logic.</p><div id=fields></div><details><summary>Advanced JSON input</summary><label for=input>JSON input</label><textarea id=input>{}</textarea></details><br><button id=run>Run integration</button><span id=status>Ready</span><p id=error></p><div id=results></div><details><summary>Raw result</summary><pre id=output>Results appear here.</pre></details><script>const el=id=>document.getElementById(id);let example={};function inputs(){el('fields').replaceChildren();Object.entries(example).forEach(([k,v])=>{const label=document.createElement('label'),input=document.createElement('input');label.textContent=k.replace(/_/g,' ')+' ';input.dataset.key=k;input.value=Array.isArray(v)?v.join(', '):typeof v==='object'?JSON.stringify(v):String(v);input.style='width:95%;padding:10px;margin:8px 0 16px';input.onchange=()=>{try{const p={};el('fields').querySelectorAll('input').forEach(i=>{const old=example[i.dataset.key];p[i.dataset.key]=Array.isArray(old)?i.value.split(',').map(x=>typeof old[0]==='number'?Number(x.trim()):x.trim()):typeof old==='number'?Number(i.value):typeof old==='boolean'?i.value==='true':typeof old==='object'?JSON.parse(i.value):i.value});el('input').value=JSON.stringify(p,null,2)}catch(e){el('error').textContent='Check input values'}};label.append(input);el('fields').append(label)})}function show(value,parent){if(value&&typeof value==='object'){const table=document.createElement('table');table.style='width:100%;border-collapse:collapse';Object.entries(value).forEach(([k,v])=>{const row=table.insertRow(),key=row.insertCell(),cell=row.insertCell();key.textContent=k.replace(/_/g,' ');key.style='padding:10px;border-bottom:1px solid #41516c';cell.style=key.style.cssText;if(v&&typeof v==='object')show(v,cell);else cell.textContent=String(v)});parent.append(table)}else parent.textContent=String(value)}async function init(){try{const r=await fetch('/api/describe');const d=await r.json();if(!r.ok)throw Error(d.error);el('title').textContent=d.title;el('description').textContent=d.description+' | Fixed RepoFuse HTTP/UI shell; generated integration logic.';example=d.example;el('input').value=JSON.stringify(example,null,2);inputs()}catch(e){el('error').textContent=e.message}}el('run').onclick=async()=>{el('error').textContent='';el('status').textContent='Running';el('run').disabled=true;try{const payload=JSON.parse(el('input').value);const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');el('output').textContent=JSON.stringify(d,null,2);el('results').replaceChildren();show(d.result,el('results'));el('status').textContent='Done'}catch(e){el('error').textContent=e.message;el('status').textContent='Failed'}finally{el('run').disabled=false}};init();</script></html>'''
+REASONS={200:'OK',400:'Bad Request',404:'Not Found',405:'Method Not Allowed',413:'Payload Too Large',500:'Internal Server Error'}
+def reply(sr,code,value,html=False):
+ try:body=value.encode() if html else json.dumps(value,allow_nan=False).encode()
+ except (TypeError,ValueError):code=500;body=b'{"error":"Integration returned unsupported JSON"}'
+ if len(body)>262144:code=500;body=b'{"error":"Integration response exceeds limit"}'
+ sr(str(code)+' '+REASONS[code],[('Content-Type','text/html; charset=utf-8' if html else 'application/json'),('Content-Length',str(len(body))),('Cache-Control','no-store'),('X-Content-Type-Options','nosniff')]);return [body]
+def app(env,sr):
+ path=env.get('PATH_INFO','/');method=env.get('REQUEST_METHOD','GET')
+ if path=='/' and method=='GET':return reply(sr,200,HTML_PAGE,True)
+ if path=='/api/describe':
+  if method!='GET':return reply(sr,405,{'error':'GET required'})
+  try:
+   d=integration.describe()
+   if not isinstance(d,dict) or set(d)!={'title','description','example'} or not all(isinstance(d[k],str) and 1<=len(d[k])<=600 for k in ('title','description')) or not isinstance(d['example'],dict):raise ValueError()
+   return reply(sr,200,d)
+  except Exception:return reply(sr,500,{'error':'Invalid integration description'})
+ if path!='/api/run':return reply(sr,404,{'error':'Route not found'})
+ if method!='POST':return reply(sr,405,{'error':'POST required'})
+ raw_length=env.get('CONTENT_LENGTH','')
+ if not isinstance(raw_length,str) or not raw_length.isascii() or not raw_length.isdecimal():return reply(sr,400,{'error':'Decimal CONTENT_LENGTH required'})
+ if len(raw_length)>6:return reply(sr,413,{'error':'Input exceeds limit'})
+ length=int(raw_length)
+ if length>65536:return reply(sr,413,{'error':'Input exceeds limit'})
+ try:
+  raw=env['wsgi.input'].read(length)
+  if len(raw)!=length:raise ValueError()
+  payload=json.loads(raw.decode('utf-8'),parse_constant=lambda x:(_ for _ in ()).throw(ValueError()))
+  if not isinstance(payload,dict):raise ValueError()
+ except (ValueError,UnicodeError,KeyError):return reply(sr,400,{'error':'JSON object required'})
+ try:return reply(sr,200,{'result':integration.compute(payload)})
+ except (ValueError,TypeError,KeyError):return reply(sr,400,{'error':'Integration rejected input'})
+ except Exception:return reply(sr,500,{'error':'Integration failed'})

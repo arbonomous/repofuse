@@ -249,3 +249,10 @@ body.freeze .screen.active { animation: none; }
 .idea-offer button { font: inherit; font-size: 12.5px; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 .idea-offer .offer-replay { background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #0b0e14; border: 0; font-weight: 600; }
 .idea-offer .offer-back { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+
+.local-connect-card { border:1px solid var(--border,#334155); border-radius:10px; padding:14px; margin:12px 0; font-size:12px; line-height:1.6; }
+.local-connect-card p { margin:8px 0; }
+.local-connect-card label { display:block; margin:12px 0; }
+.local-connect-card input[type=checkbox] { width:auto; margin-right:6px; }
+.local-connect-card a { display:block; margin:10px 0; color:#94c5ff; }
+.local-connect-card summary { cursor:pointer; font-weight:600; }

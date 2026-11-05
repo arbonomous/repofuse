@@ -228,7 +228,7 @@
         : paidAttempt && paidAttempt.spent === null
           ? "SUGGESTED FROM THE REAL ANALYSIS - local fallback - paid call state UNKNOWN"
           : "SUGGESTED FROM THE REAL ANALYSIS - local, no model call";
-    box.innerHTML = `<div class="idea-head">${head}</div>` +
+    box.innerHTML = `<div class="idea-head">${escapeEventText(head)}</div>` +
       (fromModel
         ? `<div class="idea-head">Ideas are proposals, not built or tested apps. Their security has not been reviewed.</div>`
         : "");
@@ -312,6 +312,170 @@
       verdict(`bundle preparation unreachable; build not started: ${e}`, "fail");
       return;
     }
+    showLocalBuildControls(card);
+  }
+
+  function addWorkflowStatus(parent, runId) {
+    const section = document.createElement("section");
+    const message = document.createElement("p"), button = document.createElement("button");
+    button.textContent = "Check this run's review status";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/workflow/" + runId);
+        const data = await response.json();
+        if (!response.ok) { message.textContent = data.error || "Status unavailable."; return; }
+        message.textContent = "Run " + runId + ": " + data.status + ". " +
+          (data.source_review ? "Source review: " + data.source_review.detail + ". " : "Disclosure review: " + data.disclosure_review + ". ") +
+          (data.relay.available ? "" : data.relay.detail);
+        section.querySelectorAll("[data-workflow-action]").forEach(el => el.remove());
+        for (const action of data.actions || []) {
+          if (!["verify_reviewed_bytes", "check_and_serve_reviewed_app"].includes(action)) continue;
+          const next = document.createElement("button"); next.dataset.workflowAction = action;
+          next.textContent = action === "verify_reviewed_bytes" ? "Verify these reviewed bytes (no new generation)" : "Check gates and open this app";
+          next.onclick = () => action === "verify_reviewed_bytes" ? verifyGeneral(runId) : serveGeneral(runId);
+          section.appendChild(next);
+        }
+      } catch (_) { message.textContent = "Status unavailable. No new generation was requested."; }
+      finally { button.disabled = false; }
+    };
+    section.appendChild(button); section.appendChild(message); parent.appendChild(section);
+  }
+
+  function showModelPlanning(runId, coverage) {
+    if (document.getElementById("model-planning-controls")) return;
+    const panel = document.createElement("section");
+    panel.id = "model-planning-controls"; panel.className = "local-connect-card";
+    const h = document.createElement("h3"); h.textContent = "Ask Meta for full-stack ideas"; panel.appendChild(h);
+    const note = document.createElement("p");
+    note.textContent = "Models can propose integrations from bounded public evidence without running repository code. This does not clear unresolved dependency, runtime or execution checks. A model proposal is not a working app.";
+    panel.appendChild(note);
+    for (const item of (coverage || [])) {
+      const p = document.createElement("p");
+      p.textContent = `Evidence: ${item.exports_included}/${item.exports_total} exports; ${item.dependencies_included}/${item.dependencies_total} dependencies; README up to ${item.readme_excerpt_limit} characters. ${item.excluded}`;
+      panel.appendChild(p);
+    }
+    const download = document.createElement("a");
+    download.href = "/api/planning/request/" + runId;
+    download.textContent = "Download exact unsent model-request review package";
+    download.download = runId + "-disclosure.zip"; panel.appendChild(download);
+    const publicLabel = document.createElement("label"), publicCheck = document.createElement("input");
+    publicCheck.type = "checkbox"; publicLabel.appendChild(publicCheck);
+    publicLabel.appendChild(document.createTextNode(" Send only the reviewed public evidence to Meta.")); panel.appendChild(publicLabel);
+    const creditLabel = document.createElement("label"), creditCheck = document.createElement("input");
+    creditCheck.type = "checkbox"; creditLabel.appendChild(creditCheck);
+    creditLabel.appendChild(document.createTextNode(" Current credits and account terms checked. Local token/call limits are not a dollar/card-charge cap.")); panel.appendChild(creditLabel);
+    const msg = document.createElement("p"); panel.appendChild(msg);
+    const button = document.createElement("button"); button.textContent = "Generate model ideas (1 model + 1 count request)";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/planning/generate", {method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({run_id:runId,public_inputs:publicCheck.checked,credit_review:creditCheck.checked})});
+        const result = await r.json();
+        if (!r.ok || result.error) {msg.textContent = result.error || "Model planning refused."; return;}
+        msg.textContent = `Ideas from ${result.source}; usage ${result.usage.prompt_tokens} input / ${result.usage.completion_tokens} output tokens. No source execution approved.`;
+        renderFullstackModelIdeas(runId, result);
+      } catch (e) {msg.textContent = "Planning response unavailable. Check retained attempt before any retry: " + String(e);}
+      finally {button.disabled = false;}
+    };
+    panel.appendChild(button); addWorkflowStatus(panel, runId); logEl.appendChild(panel);
+  }
+
+  function renderFullstackModelIdeas(runId, result) {
+    const box = $("#ideas-cards"); box.textContent = "";
+    $("#code-view").classList.add("hidden"); box.classList.remove("hidden");
+    for (const card of result.cards || []) {
+      const section = document.createElement("section"); section.className = "idea-card";
+      const h = document.createElement("h3"); h.textContent = card.title; section.appendChild(h);
+      for (const key of ["what", "frontend", "backend", "integration", "runtime"]) {
+        const p = document.createElement("p"); p.textContent = key + ": " + String(card[key]); section.appendChild(p);
+      }
+      for (const key of ["dependencies", "external_services", "risks"]) {
+        const p = document.createElement("p"); p.textContent = key + ": " + (card[key] || []).join("; "); section.appendChild(p);
+      }
+      const sources = document.createElement("p");
+      sources.textContent = "Sources: " + (card.sources || []).map(r => r.repo + " @ " + r.commit + ": " + r.exports.join(", ")).join(" | "); section.appendChild(sources);
+      const note = document.createElement("p"); note.textContent = "Model proposal only. Build eligibility must be checked against this exact run, runtime, dependencies and services; this card grants no execution approval."; section.appendChild(note);
+      const pick = document.createElement("button"); pick.textContent = "Choose this idea and check build eligibility";
+      pick.onclick = async () => {
+        const r = await fetch("/api/planning/select", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:runId,idea_id:card.id})});
+        const data = await r.json(); note.textContent = data.error || data.message || "Selection could not be checked.";
+        if (r.ok && data.status === "running") {
+          lastBuildGeneral = true;
+          pollLive(runId, liveSeen);
+        }
+      };
+      section.appendChild(pick); box.appendChild(section);
+    }
+  }
+
+  function reviewPackageLink(runId) {
+    const a = document.createElement("a");
+    a.href = "/api/review-package/" + runId;
+    a.textContent = "Download private source-review package";
+    a.className = "ghost-btn";
+    a.download = runId + "-review.zip";
+    return a;
+  }
+
+  function showLocalBuildControls(card) {
+    const runId = lastRunId;
+    const old = document.getElementById("local-build-controls");
+    if (old) old.remove();
+    const panel = document.createElement("div");
+    panel.id = "local-build-controls";
+    panel.className = "local-connect-card";
+    const title = document.createElement("h3");
+    title.textContent = "New build: " + String(card.title);
+    panel.appendChild(title);
+    const note = document.createElement("p");
+    note.textContent = "Your idea is prepared, not sent. Safety checks and an independent reviewer must clear this exact run before generation. After generation, exact-byte source review is required again before execution. This is an assisted review workflow, not unattended fusion.";
+    panel.appendChild(note);
+    panel.appendChild(reviewPackageLink(runId));
+    const publicLabel = document.createElement("label");
+    const publicInput = document.createElement("input");
+    publicInput.type = "checkbox";
+    publicLabel.appendChild(publicInput);
+    publicLabel.appendChild(document.createTextNode(" Only public repository inputs and public build instructions may be sent to Meta."));
+    panel.appendChild(publicLabel);
+    const creditLabel = document.createElement("label");
+    const creditInput = document.createElement("input");
+    creditInput.type = "checkbox";
+    creditLabel.appendChild(creditInput);
+    creditLabel.appendChild(document.createTextNode(" I checked current credits and billing terms. Local call limits are not a hard dollar or card-charge cap; count-request pricing is not established here."));
+    panel.appendChild(creditLabel);
+    const message = document.createElement("p");
+    message.className = "setup-note";
+    panel.appendChild(message);
+    const button = document.createElement("button");
+    button.textContent = "Arm this run and generate (4 model + 4 count requests max)";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/local-session/arm", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({run_id: runId, public_inputs: publicInput.checked,
+            credit_review: creditInput.checked}),
+        });
+        const result = await r.json();
+        if (!r.ok || result.error) {
+          message.textContent = result.error || "Run was not armed.";
+          button.disabled = false;
+          return;
+        }
+        message.textContent = "One-shot run armed. Starting bounded generation; no retries or automatic repairs.";
+        startPreparedBuild(card, runId);
+      } catch (e) {
+        message.textContent = "Arming request did not finish: " + String(e);
+        button.disabled = false;
+      }
+    };
+    panel.appendChild(button);
+    logEl.appendChild(panel);
+  }
+
+  function startPreparedBuild(card, runId) {
     const li = lastIdeas || {};
     buildInputDesc = (li.source && li.source.indexOf("model:") === 0)
       ? "the AI-suggested idea you picked"
@@ -330,10 +494,10 @@
     logEl.appendChild(bl);
     fetch("/api/build-general", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: lastRunId }),
+      body: JSON.stringify({ run_id: runId }),
     }).then(r => r.json()).then(resp => {
       if (resp.error) { verdict(resp.error, "fail"); return; }
-      pollLive(lastRunId, liveSeen);
+      pollLive(runId, liveSeen);
     }).catch(e => verdict(`build request failed honestly: ${e}`, "fail"));
   }
 
@@ -449,6 +613,15 @@
       }
       for (; seen < snap.events.length; seen++) {
         const ev = snap.events[seen];
+        if (ev.kind === "metadata_ready" && ev.stage === "planning") {
+          logText(ev.text);
+          showModelPlanning(runId, ev.data && ev.data.coverage);
+          continue;
+        }
+        if (ev.kind === "model_ideas" && ev.data) {
+          logText(ev.text); renderFullstackModelIdeas(runId, ev.data); continue;
+        }
+
         if (ev.stage === "safety") {
           if (ev.kind === "safety_verdict" && ev.data) {
             setStage("safety", "running");
@@ -568,6 +741,7 @@
               : "Review approved? Resume build (no generation)";
             rb.onclick = () => isGeneral ? verifyGeneral(runId) : resumeBuild(runId);
             logEl.appendChild(rb);
+            if (isGeneral) { logEl.appendChild(reviewPackageLink(runId)); addWorkflowStatus(logEl, runId); }
           }
         }
         if (ev.stage === "build" && ev.kind === "ready" && ev.data && ev.data.prefix) {
@@ -837,7 +1011,7 @@
       row.querySelector('[data-act="edit"]').onclick = () => {
         const body = row.querySelector(".note-body");
         const inp = document.createElement("input");
-        inp.className = "note-edit-input"; inp.value = n.text;
+        inp.className = "note-edit-input"; inp.value = n[appField];
         body.replaceWith(inp); inp.focus();
         inp.onkeydown = async (ev) => {
           if (ev.key === "Enter" && inp.value.trim()) {
@@ -857,6 +1031,47 @@
     refreshNotes();
   };
   $("#note-text").addEventListener("keydown", e => { if (e.key === "Enter") $("#note-add").click(); });
+
+  async function updateLocalConnection() {
+    try {
+      const r = await fetch("/api/local-session/status");
+      const data = await r.json();
+      $("#local-meta-status").textContent = data.connected
+        ? "Meta key connected to this Studio session. No generation has been authorized by connecting."
+        : "Meta is not connected for new builds. Analysis and saved reviewed builds need no key.";
+    } catch (e) {
+      $("#local-meta-status").textContent = "Connection status unavailable. Existing logs are unchanged.";
+    }
+  }
+  $("#local-meta-connect").onclick = async () => {
+    const field = $("#local-meta-key");
+    const key = field.value;
+    field.value = "";
+    try {
+      const r = await fetch("/api/local-session/connect", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({key}),
+      });
+      const result = await r.json();
+      if (!r.ok || result.error) {
+        $("#local-meta-status").textContent = result.error || "Connection refused.";
+        return;
+      }
+      await updateLocalConnection();
+    } catch (e) {
+      $("#local-meta-status").textContent = "Connection response was not received. Studio may have accepted the session key; disconnect or close Studio to clear it.";
+    }
+  };
+  $("#local-meta-disconnect").onclick = async () => {
+    try {
+      await fetch("/api/local-session/disconnect", {method: "POST",
+        headers: {"Content-Type": "application/json"}, body: "{}"});
+      await updateLocalConnection();
+    } catch (e) {
+      $("#local-meta-status").textContent = "Disconnect request did not finish. Closing Studio clears its session key.";
+    }
+  };
+  updateLocalConnection();
 
   /* ---------------- wire up ---------------- */
   $("#fuse-btn").onclick = () => startLive().catch(e => {
@@ -1013,7 +1228,7 @@
           const ipa = ideaEv && ideaEv.data.paid_attempt;
           tokenMeter(snap.status === "ideas_ready"
             ? (ip
-              ? `ideas from <b>${ip.model}</b> &middot; 1 model call &middot; <b>${ip.usage.input}</b> in / <b>${ip.usage.output}</b> out`
+              ? `ideas from <b>${escapeEventText(ip.model)}</b> &middot; 1 model call &middot; <b>${escapeEventText(ip.usage.input)}</b> in / <b>${escapeEventText(ip.usage.output)}</b> out`
               : (ipa && ipa.spent === true
                 ? `ideas from <b>local analysis</b> &middot; 1 model call made &middot; its output rejected, fallback shown`
                 : ipa && ipa.spent === null

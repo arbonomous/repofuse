@@ -1,6 +1,6 @@
 """Static safety qualification for input repos BEFORE any spend or run.
 
-Answers Jose's requirement honestly: before RepoFuse builds with a chosen
+Answers the user's requirement honestly: before RepoFuse builds with a chosen
 repo, say what passed, what failed, and what could not be checked - and
 block when a required check is missing. This is STATIC analysis plus
 OPTIONAL live advisory reads. It is not isolation (bubblewrap owns that),
