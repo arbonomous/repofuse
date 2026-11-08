@@ -12,6 +12,12 @@ def call(s,path='/',method='GET',raw=b'',length=None):
  def sr(status,headers):capture['status']=status;capture['headers']=dict(headers)
  body=b''.join(s.app(env,sr));return capture,body
 
+def test_object_fields_remain_json(monkeypatch):
+    page = load(monkeypatch).HTML_PAGE
+    assert "function structured(v)" in page
+    assert "JSON.stringify(v,null,2)" in page
+    assert page.index("function structured") < page.index(".join(', ')")
+
 def test_shell_real_json_roundtrip(monkeypatch):
  s=load(monkeypatch);c,b=call(s,'/api/run','POST',b'{"x":1}');assert c['status']=='200 OK';assert json.loads(b)=={'result':{'x':1}}
  c,b=call(s,'/api/describe');assert json.loads(b)['title']=='Fixed fixture'
