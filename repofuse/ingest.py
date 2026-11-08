@@ -137,27 +137,17 @@ def _reject_unsafe_links(path):
     return bad
 
 
-def clone_repo(url, dest):
-    """Shallow clone. Returns (commit_sha, error_or_None)."""
-    if os.path.exists(dest) and os.listdir(dest):
-        return None, f"destination {dest} already exists and is not empty"
-    os.makedirs(dest, exist_ok=True)
-    # --no-recurse-submodules: submodule content is never fetched/executed
-    # filter=blob:none keeps clones small; hooks disabled via _GIT_ENV
-    # protocols: https + local file only (no ssh/git); credential helpers off
-    # rlimits during clone: per-file size / CPU / address-space caps apply
-    # DURING download, not after (per-file, not an aggregate disk cap)
-    res = _git(["-c", "core.hooksPath=/dev/null",
-                "-c", "credential.helper=",
-                "-c", "protocol.ssh.allow=never",
-                "-c", "protocol.git.allow=never",
-                "-c", "protocol.ext.allow=never",
-                "clone", "--depth", "1", "--no-recurse-submodules",
-                "--filter=blob:none", "--", url, dest],
-               rlimits=["--fsize=%d" % MAX_REPO_BYTES, "--cpu=300",
-                        "--as=2147483648"])
-    if res.returncode != 0:
-        return None, res.stderr.strip()[:400]
+_CLONE_ARGS = ["-c", "core.hooksPath=/dev/null",
+               "-c", "credential.helper=",
+               "-c", "protocol.ssh.allow=never",
+               "-c", "protocol.git.allow=never",
+               "-c", "protocol.ext.allow=never"]
+_CLONE_RLIMITS = ["--fsize=%d" % MAX_REPO_BYTES, "--cpu=300",
+                  "--as=2147483648"]
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _checked_out_sha(dest):
     bad_links = _reject_unsafe_links(dest)
     if bad_links:
         return None, (f"refused: symlinks escaping repo root: "
@@ -165,6 +155,63 @@ def clone_repo(url, dest):
     if _dir_size(dest) > MAX_REPO_BYTES:
         return None, f"refused: repo exceeds {MAX_REPO_BYTES} bytes"
     sha = _git(["rev-parse", "HEAD"], cwd=dest).stdout.strip()
+    return sha, None
+
+
+def clone_repo(url, dest, expected_sha=None):
+    """Shallow clone. Returns (commit_sha, error_or_None).
+
+    expected_sha, when set, fetches that exact commit instead of the
+    default branch. A mutable branch tip is never substituted for a pin.
+    """
+    if os.path.exists(dest) and os.listdir(dest):
+        return None, f"destination {dest} already exists and is not empty"
+    if expected_sha is not None and not _FULL_SHA.fullmatch(expected_sha):
+        return None, "refused: expected pin is not a 40-character commit id"
+    os.makedirs(dest, exist_ok=True)
+    # --no-recurse-submodules: submodule content is never fetched/executed
+    # filter=blob:none keeps unpinned clones small; hooks disabled via _GIT_ENV
+    # protocols: https + local file only (no ssh/git); credential helpers off
+    # rlimits during clone: per-file size / CPU / address-space caps apply
+    # DURING download, not after (per-file, not an aggregate disk cap)
+    if expected_sha:
+        res = _git(["init", "-q", "--", dest], rlimits=_CLONE_RLIMITS)
+        if res.returncode != 0:
+            return None, (res.stderr or "").strip()[:400]
+        res = _git(["remote", "add", "origin", "--", url], cwd=dest,
+                   rlimits=_CLONE_RLIMITS)
+        if res.returncode != 0:
+            return None, (res.stderr or "").strip()[:400]
+        res = _git(_CLONE_ARGS + [
+            "fetch", "--depth", "1", "--no-recurse-submodules",
+            "origin", expected_sha], cwd=dest, rlimits=_CLONE_RLIMITS)
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout or "").strip()[:300]
+            return None, (
+                f"pin mismatch: expected {expected_sha}, fetch failed; "
+                f"refusing unpinned snapshot"
+                + (f" ({detail})" if detail else ""))
+        res = _git(_CLONE_ARGS + ["checkout", "--detach", "FETCH_HEAD"],
+                   cwd=dest, rlimits=_CLONE_RLIMITS)
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout or "").strip()[:300]
+            return None, (
+                f"pin mismatch: expected {expected_sha}, checkout failed; "
+                f"refusing unpinned snapshot"
+                + (f" ({detail})" if detail else ""))
+    else:
+        res = _git(_CLONE_ARGS + [
+            "clone", "--depth", "1", "--no-recurse-submodules",
+            "--filter=blob:none", "--", url, dest],
+                   rlimits=_CLONE_RLIMITS)
+        if res.returncode != 0:
+            return None, res.stderr.strip()[:400]
+    sha, err = _checked_out_sha(dest)
+    if err:
+        return None, err
+    if expected_sha and sha != expected_sha:
+        return None, (f"pin mismatch: expected {expected_sha}, "
+                      f"got {sha}; refusing unpinned snapshot")
     return sha, None
 
 
@@ -276,7 +323,7 @@ def ingest(url, workdir, expected_sha=None, allow_local=False):
         meta["clone_error"] = None
         meta["reused_clone"] = True
     else:
-        sha, err = clone_repo(url, dest)
+        sha, err = clone_repo(url, dest, expected_sha=expected_sha)
         meta["commit_sha"] = sha
         meta["clone_error"] = err
         if err:
