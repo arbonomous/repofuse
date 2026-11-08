@@ -267,7 +267,13 @@ class VerifyRealRunTest(unittest.TestCase):
         gluereview.write_attestation(fusion, path)
         return path
 
+    def _require_bwrap(self):
+        from repofuse.sandbox import bwrap_available
+        if not bwrap_available():
+            self.skipTest("behavioral verify requires bubblewrap isolation")
+
     def test_verify_actually_runs_tests(self):
+        self._require_bwrap()
         tmp = tempfile.mkdtemp(prefix="repofuse-verify-")
         with open(os.path.join(tmp, "test_fused.py"), "w") as f:
             f.write("import unittest\n"
@@ -305,6 +311,7 @@ class VerifyRealRunTest(unittest.TestCase):
         self.assertIn("changed since review", res["detail"])
 
     def test_verify_detects_failure(self):
+        self._require_bwrap()
         tmp = tempfile.mkdtemp(prefix="repofuse-verify-")
         with open(os.path.join(tmp, "test_fused.py"), "w") as f:
             f.write("import unittest\n"
@@ -314,6 +321,21 @@ class VerifyRealRunTest(unittest.TestCase):
         res = verify_mod.verify_fused_app(tmp,
                                           attestation_path=self._attest(tmp))
         self.assertEqual(res["status"], "failed")
+
+    def test_verify_reports_static_only_without_bwrap(self):
+        from repofuse.sandbox import bwrap_available
+        if bwrap_available():
+            self.skipTest("this case covers the no-isolation path only")
+        tmp = tempfile.mkdtemp(prefix="repofuse-verify-")
+        with open(os.path.join(tmp, "test_fused.py"), "w") as f:
+            f.write("import unittest\n"
+                    "class T(unittest.TestCase):\n"
+                    "    def test_ok(self):\n"
+                    "        self.assertEqual(1 + 1, 2)\n")
+        res = verify_mod.verify_fused_app(tmp,
+                                          attestation_path=self._attest(tmp))
+        self.assertEqual(res["status"], "static_passed", res)
+        self.assertEqual(res.get("mode"), "static_only")
 
 
 if __name__ == "__main__":

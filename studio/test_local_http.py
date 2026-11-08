@@ -45,7 +45,7 @@ def test_armed_build_consumed_before_thread(http,monkeypatch):
  assert post('/api/build-general',{'run_id':RID})[0]==200
  assert run['status']=='running';assert len(calls)==1;assert calls[0][1]=={'MODEL_API_KEY':'fixture-local-key-not-real'}
  assert post('/api/build-general',{'run_id':RID})[0]==409;assert len(calls)==1
- limits=json.loads((fr/'session-envelope.json').read_text());assert limits['max_calls']==4;assert 'fixture' not in (fr/'session-envelope.json').read_text()
+ limits=json.loads((fr/'session-envelope.json').read_text());assert limits['max_calls']==5;assert 'fixture' not in (fr/'session-envelope.json').read_text()
 
 def test_no_http_approval_import_route(http):
  post,run,fr=http;assert post('/api/review-import',{})[0]==404

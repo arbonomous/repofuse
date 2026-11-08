@@ -74,10 +74,15 @@ class FakeProvider:
                             "to_repo": "beta",
                             "to_route_or_input": "beta_fn"}],
                 "risks": ["none"]})
-        elif "adapter shim code" in joined:
+        elif "Write ONLY integration.py" in joined:
             assert response_format == {"type": "json_object"}
-            content = json.dumps({"app_adapter.py":
-                                  "# fixture adapter\nBRIDGE = 1\n"})
+            content = json.dumps({"integration.py":
+                                  "def describe():\n"
+                                  "    return {'title': 'Fixture',\n"
+                                  "            'description': 'Offline fixture',\n"
+                                  "            'example': {}}\n"
+                                  "def compute(payload):\n"
+                                  "    return payload\n"})
         elif "integration test file" in joined:
             content = json.dumps({"test_fused.py": "import unittest\n"})
         else:
@@ -118,19 +123,28 @@ class MockSynthesisQualification(unittest.TestCase):
         assert self.fake.chat_calls == 4  # probe + arch + glue + test
         assert self.fake.count_calls == 4  # each charged call prefighted
         assert set(res["files_written"]) == {
-            os.path.join("generated", "app_adapter.py"), "test_fused.py"}
-        # files carry the fixture provider's name, never a real model's
-        for rel in res["files_written"]:
-            head = open(os.path.join(self.fusion, rel)).read(400)
+            os.path.join("generated", "integration.py"),
+            os.path.join("generated", "app.py"),
+            "test_fused.py"}
+        # model-generated slots carry the fixture provider's name; the
+        # fixed shell is assistant-authored infrastructure, never a model.
+        for rel in (os.path.join("generated", "integration.py"),
+                    "test_fused.py"):
+            with open(os.path.join(self.fusion, rel)) as f:
+                head = f.read(400)
             assert FIXTURE_MODEL in head, rel
+        with open(os.path.join(self.fusion, "generated", "app.py")) as f:
+            shell_head = f.read(400)
+        assert "RepoFuse-fixed-infrastructure" in shell_head
+        assert res.get("fixed_shell")
         # raw paid responses retained per step
         for step in ("probe", "architecture-manifest", "glue-synthesis",
                      "test-synthesis"):
             assert os.path.isfile(os.path.join(
                 self.out, "raw_responses", step + ".json")), step
         # vendored tree untouched by generation
-        manifest = json.loads(open(os.path.join(
-            self.fusion, "vendor", "hashes.json")).read())
+        with open(os.path.join(self.fusion, "vendor", "hashes.json")) as f:
+            manifest = json.loads(f.read())
         assert manifest["repos"] and manifest["hashes"]
 
     def test_review_gate_covers_mock_output_and_chosen_vendor(self):
@@ -141,7 +155,8 @@ class MockSynthesisQualification(unittest.TestCase):
         doc = gluereview.write_attestation(self.fusion, att)
         # the pinned set includes mock-generated files AND vendor files
         assert any(k.startswith("vendor" + os.sep) for k in doc["files"])
-        assert os.path.join("generated", "app_adapter.py") in doc["files"]
+        assert os.path.join("generated", "integration.py") in doc["files"]
+        assert os.path.join("generated", "app.py") in doc["files"]
         assert "test_fused.py" in doc["files"]
         ok, why, _ = gluereview.check_attestation(self.fusion, att)
         assert ok, why
