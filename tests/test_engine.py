@@ -549,6 +549,37 @@ class HardeningTest(unittest.TestCase):
                                  allow_local=True)
         self.assertIsNone(meta["clone_error"])
 
+    def test_ingest_checks_out_pinned_commit_not_branch_tip(self):
+        import tempfile
+        from repofuse import ingest as ingest_mod
+        tmp = tempfile.mkdtemp(prefix="repofuse-oldpin-")
+        repo = os.path.join(tmp, "src")
+        os.makedirs(repo)
+        with open(os.path.join(repo, "LICENSE"), "w") as f:
+            f.write("MIT License\n")
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "first"], cwd=repo, check=True)
+        first = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+            capture_output=True, text=True).stdout.strip()
+        with open(os.path.join(repo, "later.txt"), "w") as f:
+            f.write("later\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "second"], cwd=repo, check=True)
+        tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+            capture_output=True, text=True).stdout.strip()
+        self.assertNotEqual(first, tip)
+        meta = ingest_mod.ingest(repo, os.path.join(tmp, "out"),
+                                 expected_sha=first, allow_local=True)
+        self.assertIsNone(meta["clone_error"], meta.get("clone_error"))
+        self.assertEqual(meta["commit_sha"], first)
+        self.assertFalse(os.path.exists(
+            os.path.join(meta["path"], "later.txt")))
+
 
 class AcceptanceTest(unittest.TestCase):
     def _fusion(self, test_src, glue_src="VALUE = 41\n"):
