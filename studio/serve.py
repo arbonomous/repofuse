@@ -506,22 +506,22 @@ def _general_review_or_verify(run, run_id):
          "the sandboxed backend tests now. Browser acceptance is separate.")
     res = verify_mod.verify_fused_app(fusion_dir,
                                       attestation_path=attestation)
+    with _lock:
+        run["general_verify"] = res
+        if res.get("status") == "passed":
+            run["status"] = "build_verified"
+        else:
+            run["status"] = "build_failed"
     if res.get("status") == "passed":
         emit(run, "verify", "stage_done",
              "Sandboxed backend tests PASSED for the reviewed bytes. "
              "Browser acceptance is NOT established. The fused "
              "app is NOT served automatically - a general app has no "
              "reviewed serving contract yet.")
-        with _lock:
-            run["status"] = "build_verified"
     else:
         emit(run, "verify", "stage_done",
              "Verify did not pass, stated exactly: "
              f"{res.get('status')} - {res.get('detail') or res.get('behavioral')}")
-        with _lock:
-            run["status"] = "build_failed"
-    with _lock:
-        run["general_verify"] = res
 
 
 
@@ -2278,10 +2278,13 @@ class Handler(BaseHTTPRequestHandler):
             run = _runs.get(run_id)
             if not run:
                 return self._json(404, {"error": "unknown run"})
-            if run["status"] not in ("awaiting_review", "frontend_preflight_failed"):
+            if run["status"] not in ("awaiting_review",
+                                      "frontend_preflight_failed",
+                                      "build_failed"):
                 return self._json(
                     409, {"error": f"run is {run['status']}, not "
-                                   "awaiting_review"})
+                                   "awaiting review or a failed verify "
+                                   "that can be rechecked"})
             gate_ok, gate_why = spend_safety_gate(
                 dict(run, run_id=run_id))
             if not gate_ok:
