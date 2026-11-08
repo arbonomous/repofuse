@@ -112,6 +112,7 @@ class TestPromptSchemaAgreement(unittest.TestCase):
         self.assertEqual(schema_key, "test_fused.py")
         # prompt requires exercising the real vendored inputs, not only glue
         self.assertIn("vendored input repos", msgs[1]["content"])
+        self.assertIn("wall-clock", msgs[1]["content"])
 
     def test_glue_is_honestly_unconstrained(self):
         """Glue maps arbitrary filenames, so json_object only - and the
