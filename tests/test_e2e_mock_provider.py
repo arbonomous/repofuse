@@ -101,12 +101,17 @@ class ContractFake:
             finish = self.arch_finish
             if finish == "length":  # simulate the 2026-11-04 truncation
                 content = content[:120]  # unterminated JSON
-        elif "adapter shim code" in joined:
+        elif "Write ONLY integration.py" in joined:
             assert reasoning_effort == "minimal", reasoning_effort
             # glue: valid-JSON mode ONLY, never claimed schema-constrained
             assert response_format == {"type": "json_object"}
-            content = json.dumps({"app_adapter.py":
-                                  "# generated adapter\nVALUE = 1\n"})
+            content = json.dumps({"integration.py":
+                                  "def describe():\n"
+                                  "    return {'title': 'Fixture',\n"
+                                  "            'description': 'Offline',\n"
+                                  "            'example': {}}\n"
+                                  "def compute(payload):\n"
+                                  "    return payload\n"})
             finish = "stop"
         elif "integration test file" in joined:
             assert reasoning_effort == "minimal", reasoning_effort

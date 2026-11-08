@@ -130,13 +130,18 @@ def main():
         ma._OPENER = old_opener
 
     # the actual serialization path: response_format passed verbatim
+    # through build_payload (shared by staging and the live send path)
     import inspect
     import repofuse.model_api as ma
-    src = inspect.getsource(ma.chat_completion)
-    check("chat_completion passes response_format verbatim",
-          'payload["response_format"] = response_format' in src)
+    payload_src = inspect.getsource(ma.build_payload)
+    chat_src = inspect.getsource(ma.chat_completion)
+    check("build_payload passes response_format verbatim",
+          'payload["response_format"] = response_format' in payload_src)
+    check("chat_completion stages via build_payload",
+          "build_payload(" in chat_src
+          and "response_format=response_format" in chat_src)
     check("chat_completion refuses max_tokens > 4096",
-          "exceeds hard cap 4096" in src)
+          "exceeds hard cap 4096" in chat_src)
     print(f"\n{len(FAILURES)} failures")
     return 1 if FAILURES else 0
 

@@ -31,7 +31,7 @@ The product is a local supervised prototype, not a production service or unatten
 
 ## Test status
 
-The private assembled distribution's local subset reported 96 passed and one stale envelope-expectation failure (four expected versus the current five-call maximum). A separately qualified reviewer tree reported 355 passed. Neither statement is a blanket claim that every file in this public assembled distribution has passed a fresh complete release test. The generated cached-stats example has its own evidence described above.
+The local subset in this checkout reports a green studio and tests run under the current five-call session envelope. A separately qualified reviewer tree previously reported 355 passed. Neither statement is a blanket claim that every file in this public assembled distribution has passed a fresh complete release test. The generated cached-stats example has its own evidence described above.
 
 ## What the pipeline does
 

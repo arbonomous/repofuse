@@ -310,8 +310,14 @@ class _FakeServable:
                 "source_exports": {"alpha": ["VALUE"], "beta": ["VALUE"]},
                 "arbitrage_opportunity": "fixture",
                 "required_shims": [], "bridge": [], "risks": []})
-        elif "adapter shim code" in joined:
-            content = json.dumps({"app_adapter.py": WSGI_APP})
+        elif "Write ONLY integration.py" in joined:
+            content = json.dumps({"integration.py":
+                                  "def describe():\n"
+                                  "    return {'title': 'Capstone fixture',\n"
+                                  "            'description': 'Offline only',\n"
+                                  "            'example': {'n': 1}}\n"
+                                  "def compute(payload):\n"
+                                  "    return {'echo': payload}\n"})
         elif "integration test file" in joined:
             content = json.dumps({"test_fused.py": "import unittest\n"})
         else:
@@ -385,7 +391,12 @@ def test_generation_to_contract_to_contained_serving(tmp_path,
         assert port, why
         with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/", timeout=3) as r:
-            assert r.read() == b"reviewed-fixture-ok"
+            body = r.read()
+            assert b"RepoFuse Workbench" in body or b"<!doctype html>" in body
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/describe", timeout=3) as r:
+            described = json.loads(r.read().decode())
+            assert described["title"] == "Capstone fixture"
     finally:
         _stop(run["run_id"])
 

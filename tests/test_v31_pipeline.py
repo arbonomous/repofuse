@@ -181,24 +181,28 @@ def _manifest():
 def test_glue_prompt_states_naming_and_usability_contract():
     msgs = synthesize.build_glue_prompt(_manifest(), {"bridge": "x"})
     payload = msgs[1]["content"]
-    assert "app.py defines a top-level WSGI" in payload
-    assert "app(environ, start_response)" in payload
-    assert "from generated import <name>" in payload
-    assert "from vendor import <slug>" in payload
-    assert "creates or mutates a resource" in payload
-    assert "REPOFUSE_APP_SECRET" in payload
-    assert "never hardcode a secret" in payload
+    assert "Write ONLY integration.py" in payload
+    assert "describe()" in payload
+    assert "compute(payload" in payload
+    assert "assistant-authored fixed HTTP/UI shell" in payload
+    assert "BOTH-REPOSITORY" in payload
+    assert "No app.py, no server, no routes" in payload
+    assert "supported_product_boundary" in payload
 
 
 def test_test_prompt_states_import_and_flow_contract():
-    msgs = synthesize.build_test_prompt(_manifest(), {"bridge": "x"},
-                                        {"generated/app.py": "src"})
+    msgs = synthesize.build_test_prompt(
+        _manifest(), {"bridge": "x"},
+        {"generated/integration.py": "src", "generated/app.py": "shell"})
     payload = msgs[1]["content"]
     assert "from vendor import <slug>" in payload
     assert "from generated import <name>" in payload
     assert "REPOFUSE_APP_SECRET" in payload
     assert "generated/app.py" in payload
     assert "create-then-use flow" in payload
+    assert "/api/describe" in payload
+    assert "/api/run" in payload
+    assert "integration.compute" in payload
 
 
 def test_write_files_refuses_model_init(tmp_path):
@@ -425,8 +429,14 @@ def _v31r4_fake_provider(captured):
                 "source_exports": {"a": ["App"]},
                 "arbitrage_opportunity": "x",
                 "required_shims": [], "bridge": [], "risks": []})
-        elif "adapter shim code" in joined:
-            content = json.dumps({"app_adapter.py": "VALUE = 1\n"})
+        elif "Write ONLY integration.py" in joined:
+            content = json.dumps({"integration.py":
+                                  "def describe():\n"
+                                  "    return {'title': 'Fixture',\n"
+                                  "            'description': 'Offline',\n"
+                                  "            'example': {}}\n"
+                                  "def compute(payload):\n"
+                                  "    return payload\n"})
         elif "integration test file" in joined:
             content = json.dumps({"test_fused.py": "import unittest\n"})
         else:
