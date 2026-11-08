@@ -51,6 +51,24 @@ class TestRequirementLines(unittest.TestCase):
         self.assertEqual(d["flask"]["spec"], "==3.0.0")
         self.assertEqual(d["pytest"]["spec"], "*")
 
+    def test_optional_and_test_requirements_are_development(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "tests"))
+            with open(os.path.join(tmp, "pyproject.toml"), "w", encoding="utf-8") as f:
+                f.write(TestPyprojectScoping.TOML)
+            with open(os.path.join(tmp, "tests", "requirements.txt"), "w", encoding="utf-8") as f:
+                f.write("hypothesis>=6\n")
+            with open(os.path.join(tmp, "requirements.txt"), "w", encoding="utf-8") as f:
+                f.write("flask==3.0.0\n")
+            from repofuse.analyze import read_dependencies
+            from repofuse.ingest import find_manifests
+            deps = read_dependencies(tmp, find_manifests(tmp))
+        self.assertTrue(deps["pytest"]["dev"])
+        self.assertTrue(deps["hypothesis"]["dev"])
+        self.assertNotIn("dev", deps["flask"])
+        self.assertNotIn("dev", deps["requests"])
+
 
 if __name__ == "__main__":
     unittest.main()

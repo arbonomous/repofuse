@@ -23,7 +23,7 @@
 <section id="screen-setup" class="screen active">
   <div class="hero">
     <h1>Fuse two repositories<br>into one app.</h1>
-    <p class="hero-sub">Paste two GitHub repos and describe what you want. Live mode really clones, pins and analyzes them now, then stops before the paid model stages. Replay the recorded run to watch the full pipeline - original AI output, its failure, and the labeled repair.</p>
+    <p class="hero-sub">Paste two GitHub repos. Studio clones, pins, and checks them, then asks Meta for ideas and builds the one you pick. A failed or unknown safety check stops. Replay is the recorded notes example.</p>
   </div>
   <div class="setup-card">
     <details class="local-connect-card">
@@ -38,11 +38,11 @@
     </details>
     <label class="field-label">Repository A</label>
     <div class="repo-input"><span class="gh-icon">&#9679;</span>
-      <input id="repo-a" value="https://github.com/miguelgrinberg/microdot" spellcheck="false">
+      <input id="repo-a" value="https://github.com/python-trio/sniffio" spellcheck="false">
     </div>
     <label class="field-label">Repository B</label>
     <div class="repo-input"><span class="gh-icon">&#9679;</span>
-      <input id="repo-b" value="https://github.com/coleifer/peewee" spellcheck="false">
+      <input id="repo-b" value="https://github.com/python/mypy_extensions" spellcheck="false">
     </div>
     <label class="field-label">What should it do? <span class="field-opt">(optional - or let RepoFuse suggest)</span></label>
     <textarea id="intent" rows="2" spellcheck="false" placeholder="Leave blank and RepoFuse suggests builds from what the repos actually contain."></textarea>
@@ -53,7 +53,7 @@
     <input id="local-run-id" placeholder="run-0123456789abcdef" spellcheck="false">
     <button id="open-local-run" class="replay-btn">Open retained local run (no generation)</button>
     <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events; execution still needs all review gates.</p>
-    <p class="setup-note"><b>Suggest</b> really clones, pins and analyzes your repos now, then proposes builds derived from their actual exports - local analysis, no AI call. Picking an idea (or writing your own) stops before the paid model stages. <b>Replay</b> shows the recorded microdot + peewee NOTES API build&rsquo;s full pipeline, failure and repair included - it is always that recorded example, never your inputs.</p>
+    <p class="setup-note"><b>Suggest</b> clones, pins, and checks the two repositories. When the check is pass or warn, record the findings on the build page, record the unsent request hash, then ask Meta for ideas and build one. Fail and unknown stop, and nothing is spent. <b>Replay</b> is the recorded microdot + peewee notes example, never your inputs.</p>
   </div>
 </section>
 

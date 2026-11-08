@@ -279,8 +279,10 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
     """
     out = {"status": Verdict.UNKNOWN, "source": "offline mode",
            "queries_made": 0, "vulnerabilities": [], "unresolved": [],
+           "development_unresolved": [],
            "scope": "repo commit advisory + pinned direct dependencies "
-                    "only; transitive dependencies are not resolved",
+                    "only; transitive dependencies are not resolved. "
+                    "Development extras are reported and are not a runtime block",
            "note": "advisory not run (offline mode); required check "
                    "unknown -> blocks execution"}
     queries, keyed = [], []
@@ -295,13 +297,15 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
         via = info.get("via", "")
         ver = _pinned_version(info.get("spec"))
         eco = _ecosystem(via)
+        item = {"name": name, "spec": info.get("spec") or "*", "via": via,
+                "reason": "unresolved version" if not ver else
+                "unresolved ecosystem"}
+        if info.get("dev"):
+            if not ver or not eco:
+                out["development_unresolved"].append(item)
+            continue
         if not ver or not eco:
-            out["unresolved"].append({"name": name,
-                                      "spec": info.get("spec") or "*",
-                                      "via": via,
-                                      "reason": "unresolved version"
-                                      if not ver else
-                                      "unresolved ecosystem"})
+            out["unresolved"].append(item)
             continue
         queries.append({"package": {"name": name, "ecosystem": eco},
                         "version": ver})
@@ -357,6 +361,10 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
                     "An empty result does not establish the subject is "
                     "indexed by OSV or vulnerability-free - flagged for "
                     "reviewer acknowledgment, not claimed as safe")
+        extras = out.get("development_unresolved") or []
+        if extras:
+            note += (f" {len(extras)} development extra(s) are outside "
+                     "this runtime check and do not change the verdict.")
         out.update({"status": status, "source": OSV_QUERYBATCH,
                     "queries_made": len(queries),
                     "vulnerabilities": vulns, "note": note})

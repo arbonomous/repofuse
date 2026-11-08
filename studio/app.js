@@ -342,13 +342,121 @@
     section.appendChild(button); section.appendChild(message); parent.appendChild(section);
   }
 
-  function showModelPlanning(runId, coverage) {
+  let pendingCoverage = null;
+
+  async function showBuildGate(runId) {
+    const old = document.getElementById("build-gate");
+    if (old) old.remove();
+    const panel = document.createElement("section");
+    panel.id = "build-gate"; panel.className = "local-connect-card";
+    const title = document.createElement("h3");
+    title.textContent = "Safety findings for this pair";
+    panel.appendChild(title);
+    const msg = document.createElement("p");
+    panel.appendChild(msg);
+    logEl.appendChild(panel);
+    let preview;
+    try {
+      const response = await fetch("/api/operator-review/" + runId);
+      preview = await response.json();
+      if (!response.ok) { msg.textContent = preview.error || "Findings unavailable."; return; }
+    } catch (_) { msg.textContent = "Findings unavailable."; return; }
+    const list = document.createElement("ul");
+    for (const line of preview.findings || []) {
+      const item = document.createElement("li");
+      item.textContent = line;
+      list.appendChild(item);
+    }
+    panel.appendChild(list);
+    if (!preview.recordable) {
+      msg.textContent = "A failed or unknown check stops this build. Recording these lines would not let it continue.";
+      const planning = document.getElementById("model-planning-controls");
+      if (planning) planning.remove();
+      return;
+    }
+    if (preview.input_ready) {
+      msg.textContent = preview.input_detail || "Findings already recorded for this run.";
+      showModelPlanning(runId, pendingCoverage, preview);
+      return;
+    }
+    msg.textContent = "Read every line. Recording them lets a warn continue to idea generation. It does not approve running generated code.";
+    const name = document.createElement("input");
+    name.placeholder = "Your name";
+    name.maxLength = 120;
+    panel.appendChild(name);
+    const button = document.createElement("button");
+    button.textContent = "Record that I read these findings";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({run_id: runId, stage: "input", reviewer: name.value, findings: preview.findings})});
+        const data = await r.json();
+        msg.textContent = data.error || "Findings recorded. Idea generation can continue. Generated code still cannot run.";
+        if (r.ok) showModelPlanning(runId, pendingCoverage, preview);
+        else button.disabled = false;
+      } catch (_) { msg.textContent = "Findings were not recorded."; button.disabled = false; }
+    };
+    panel.appendChild(button);
+  }
+
+  async function showSourceGate(runId) {
+    const old = document.getElementById("source-gate");
+    if (old) old.remove();
+    let preview;
+    try {
+      const response = await fetch("/api/operator-review/" + runId);
+      preview = await response.json();
+      if (!response.ok || !preview.source) return;
+    } catch (_) { return; }
+    const panel = document.createElement("section");
+    panel.id = "source-gate"; panel.className = "local-connect-card";
+    const title = document.createElement("h3");
+    title.textContent = "Generated source for this build";
+    panel.appendChild(title);
+    const hash = document.createElement("p");
+    hash.textContent = "Current tree hash: " + preview.source.tree_sha256
+      + " (" + preview.source.file_count + " files, including vendored bytes).";
+    panel.appendChild(hash);
+    const generated = preview.source.generated || {};
+    for (const name of Object.keys(generated)) {
+      const heading = document.createElement("h4");
+      heading.textContent = name;
+      const pre = document.createElement("pre");
+      pre.textContent = generated[name];
+      panel.appendChild(heading);
+      panel.appendChild(pre);
+    }
+    const msg = document.createElement("p");
+    msg.textContent = "Recording this hash permits contained tests and serving only while these bytes still match. It does not approve a failed or unknown safety check.";
+    panel.appendChild(msg);
+    const name = document.createElement("input");
+    name.placeholder = "Your name";
+    name.maxLength = 120;
+    panel.appendChild(name);
+    const button = document.createElement("button");
+    button.textContent = "Record that I read this generated tree";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({run_id: runId, stage: "source", reviewer: name.value, tree_sha256: preview.source.tree_sha256})});
+        const data = await r.json();
+        msg.textContent = data.error || "Source review recorded. Verify runs the contained tests. It does not generate again.";
+        if (!r.ok) button.disabled = false;
+      } catch (_) { msg.textContent = "Source review was not recorded."; button.disabled = false; }
+    };
+    panel.appendChild(button);
+    logEl.appendChild(panel);
+  }
+
+  function showModelPlanning(runId, coverage, preview) {
     if (document.getElementById("model-planning-controls")) return;
     const panel = document.createElement("section");
     panel.id = "model-planning-controls"; panel.className = "local-connect-card";
-    const h = document.createElement("h3"); h.textContent = "Ask Meta for full-stack ideas"; panel.appendChild(h);
+    const h = document.createElement("h3"); h.textContent = "Ask Meta for ideas, then build one"; panel.appendChild(h);
     const note = document.createElement("p");
-    note.textContent = "Models can propose integrations from bounded public evidence without running repository code. This does not clear unresolved dependency, runtime or execution checks. A model proposal is not a working app.";
+    note.textContent = "This sends the reviewed public evidence to Meta and uses one model call plus one count check. The cards that come back can be built in the same run. A card is not a finished app until the later stages and the contained tests pass.";
     panel.appendChild(note);
     for (const item of (coverage || [])) {
       const p = document.createElement("p");
@@ -365,9 +473,44 @@
     const creditLabel = document.createElement("label"), creditCheck = document.createElement("input");
     creditCheck.type = "checkbox"; creditLabel.appendChild(creditCheck);
     creditLabel.appendChild(document.createTextNode(" Current credits and account terms checked. Local token/call limits are not a dollar/card-charge cap.")); panel.appendChild(creditLabel);
+    const disclosure = preview && preview.disclosure;
+    let disclosureReady = !!(preview && preview.disclosure_ready);
+    const dmsg = document.createElement("p");
+    if (disclosure && disclosure.payload_sha256) {
+      const hash = document.createElement("p");
+      hash.textContent = "Unsent request hash: " + disclosure.payload_sha256
+        + " (" + String(disclosure.payload_bytes) + " bytes).";
+      panel.appendChild(hash);
+      if (disclosureReady) dmsg.textContent = "This unsent request is already recorded.";
+      else {
+        const dname = document.createElement("input");
+        dname.placeholder = "Your name";
+        dname.maxLength = 120;
+        panel.appendChild(dname);
+        const dbutton = document.createElement("button");
+        dbutton.textContent = "Record that I read this unsent request";
+        dbutton.onclick = async () => {
+          dbutton.disabled = true;
+          try {
+            const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify({run_id: runId, stage: "disclosure", reviewer: dname.value, payload_sha256: disclosure.payload_sha256})});
+            const data = await r.json();
+            disclosureReady = r.ok;
+            dmsg.textContent = data.error || "Request review recorded. Generating ideas sends this metadata to Meta.";
+            if (!r.ok) dbutton.disabled = false;
+          } catch (_) { dmsg.textContent = "Request review was not recorded."; dbutton.disabled = false; }
+        };
+        panel.appendChild(dbutton);
+      }
+    }
+    panel.appendChild(dmsg);
     const msg = document.createElement("p"); panel.appendChild(msg);
     const button = document.createElement("button"); button.textContent = "Generate model ideas (1 model + 1 count request)";
     button.onclick = async () => {
+      if (disclosure && disclosure.payload_sha256 && !disclosureReady) {
+        msg.textContent = "Record the unsent request hash before generating ideas.";
+        return;
+      }
       button.disabled = true;
       try {
         const r = await fetch("/api/planning/generate", {method:"POST", headers:{"Content-Type":"application/json"},
@@ -615,7 +758,7 @@
         const ev = snap.events[seen];
         if (ev.kind === "metadata_ready" && ev.stage === "planning") {
           logText(ev.text);
-          showModelPlanning(runId, ev.data && ev.data.coverage);
+          pendingCoverage = ev.data && ev.data.coverage;
           continue;
         }
         if (ev.kind === "model_ideas" && ev.data) {
@@ -647,14 +790,16 @@
             verdict("STOPPED BY SAFETY CHECKS - a required check failed "
                     + "or is unknown; nothing spent, nothing executed",
                     "fail");
+            showBuildGate(runId);
             continue;
           }
           if (ev.kind === "stage_done") {
             const meta = snap.safety && snap.safety.status === "warn"
-              ? "warn - review needed before spend/execute" : "qualified";
+              ? "warn - record the findings below to continue" : "qualified";
             setStage("safety", "done", meta);
             setStage("vendor", "running");
             logText(ev.text);
+            showBuildGate(runId);
             continue;
           }
           logText(ev.text);
@@ -797,7 +942,12 @@
         const staleReview = document.getElementById("resume-btn");
         if (staleReview) staleReview.remove();
       }
-      if (snap.status !== "running" && snap.status !== "resuming") { liveSeen = seen; break; }
+      if (snap.status !== "running" && snap.status !== "resuming") {
+        liveSeen = seen;
+        if (lastBuildGeneral && ["awaiting_review", "frontend_preflight_failed", "build_failed"].includes(snap.status))
+          showSourceGate(runId);
+        break;
+      }
       await new Promise(r => setTimeout(r, 500));
     }
   }
@@ -1095,8 +1245,11 @@
     replayBtn.title = ok ? "" : "Replay exists only for the recorded microdot + peewee notes build";
     $("#replay-hint").textContent = ok
       ? "Repos match the RECORDED NOTES API build (microdot + peewee, 2026-11-04) - replay that recorded run's full paid pipeline."
-      : "Replay exists only for the RECORDED NOTES API build (pinned microdot + peewee, 2026-11-04). Your inputs run the real free stages instead.";
+      : ($("#intent").value.trim()
+        ? "A written intent stops before paid generation. Leave it blank to get ideas and build one."
+        : "Leave the intent blank. After the safety check, record the findings on the build page, then ask Meta for ideas and build one.");
   }));
+  $("#repo-a").dispatchEvent(new Event("input"));
   replayBtn.disabled = false; // default inputs match
 
   // Recover a retained general run from the local server. This reads
