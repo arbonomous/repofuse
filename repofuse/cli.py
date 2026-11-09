@@ -139,6 +139,7 @@ def cmd_run(args):
     vendor_manifest = vendor_mod.vendor_repos(
         metas, os.path.join(out, "fused_app"))
     vendor_mod.write_import_shim(os.path.join(out, "fused_app"))
+    vendor_mod.write_surfaces(os.path.join(out, "fused_app"), metas, analyses)
     ingest_mod.save_json(vendor_manifest, os.path.join(out, "vendor_manifest.json"))
     print(f"vendored {len(vendor_manifest['repos'])} repo(s) "
           f"({len(vendor_manifest['hashes'])} files hashed)")
@@ -219,6 +220,7 @@ def cmd_qualify(args):
     fusion_dir = os.path.join(out, "fused_app")
     vendor_manifest = vendor_mod.vendor_repos(metas, fusion_dir)
     vendor_mod.write_import_shim(fusion_dir)
+    vendor_mod.write_surfaces(fusion_dir, metas, analyses)
     ingest_mod.save_json(vendor_manifest,
                          os.path.join(out, "vendor_manifest.json"))
     print(f"vendored {len(vendor_manifest['repos'])} pinned repo(s) "

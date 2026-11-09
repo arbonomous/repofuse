@@ -274,3 +274,31 @@ body.freeze .screen.active { animation: none; }
 .local-connect-card input:not([type=checkbox]) { width:100%; max-width:360px; background:var(--bg2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
 .local-connect-card a { display:block; margin:10px 0; color:#94c5ff; }
 .local-connect-card summary { cursor:pointer; font-weight:600; }
+
+/* Straight build. The earlier demo keeps the rules above. */
+body.straight { min-height: 100vh; }
+.s-top { display: flex; justify-content: space-between; align-items: center; padding: 16px 28px; }
+.s-main { max-width: 720px; margin: 0 auto; padding: 12px 22px 48px; }
+.s-main h1 { font-size: 40px; line-height: 1.05; letter-spacing: -.6px; margin: 12px 0 10px; }
+.s-lead { color: var(--dim); font-size: 17px; margin-bottom: 22px; }
+.s-card { background: rgba(21,26,38,.92); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+.s-card label { display: block; margin: 12px 0 6px; font-size: 12px; letter-spacing: .4px; text-transform: uppercase; color: var(--dim); }
+.s-card input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; font: 14px/1.4 var(--mono); }
+.s-row { display: flex; gap: 8px; }
+.s-row input { flex: 1; }
+.s-row button, .s-go { border: 0; border-radius: 10px; padding: 11px 16px; font-weight: 650; }
+.s-row button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+.s-go { width: 100%; margin-top: 16px; background: linear-gradient(90deg, var(--accent), var(--accent2)); color: #071018; font-size: 16px; }
+.s-go:disabled { opacity: .55; cursor: wait; }
+.s-note, .s-status { color: var(--dim); margin-top: 10px; }
+.s-status { font-size: 16px; color: var(--text); min-height: 1.5em; }
+.s-steps { display: flex; gap: 8px; list-style: none; margin: 18px 0 8px; }
+.s-steps li { flex: 1; text-align: center; border: 1px solid var(--line); border-radius: 999px; padding: 6px 0; color: var(--dim); font-size: 13px; }
+.s-steps li.now { color: var(--text); border-color: var(--accent); }
+.s-steps li.done { color: var(--pass); border-color: rgba(61,220,132,.5); }
+.s-steps li.stopped { color: var(--fail); border-color: rgba(255,92,108,.6); }
+.s-card h2 { font-size: 22px; margin-bottom: 6px; }
+.s-app { margin-top: 14px; font-size: 20px; }
+.s-app a { color: var(--accent2); }
+.s-log { list-style: none; margin-top: 16px; max-height: 240px; overflow: auto; color: var(--dim); font: 12px/1.45 var(--mono); }
+.s-log li { padding: 3px 0; border-bottom: 1px solid rgba(35,43,61,.7); }

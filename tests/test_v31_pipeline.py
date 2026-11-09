@@ -68,6 +68,28 @@ def test_shim_skips_slugs_without_matching_package(tmp_path):
     assert "ok" in r.stdout
 
 
+def test_shim_binds_surface_for_hyphenated_slug(tmp_path):
+    """A directory name that is not a Python identifier is imported
+    through its read-only surface: from vendor import some_repo."""
+    vend = tmp_path / "vendor"
+    (vend / "some-repo").mkdir(parents=True)
+    (vend / "surfaces").mkdir()
+    (vend / "__init__.py").write_text(IMPORT_SHIM)
+    (vend / "surfaces" / "__init__.py").write_text("")
+    (vend / "surfaces" / "some_repo.py").write_text(
+        "def exports():\n    return ['Token']\n")
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "from vendor import some_repo\n"
+        "assert some_repo.exports() == ['Token']\n"
+        "assert 'vendor.some-repo' not in sys.modules\n"
+        "print('ok')\n" % str(tmp_path))
+    r = subprocess.run([sys.executable, "-c", code],
+                       capture_output=True, text=True, cwd=str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "ok" in r.stdout
+
+
 # ---------- spawn_secrets contract validation ----------
 
 def _contract_tree(tmp_path, contract):

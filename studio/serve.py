@@ -76,8 +76,11 @@ MAX_RETAINED_RUNS = 10
 STATIC = {
     "/": ("text/html; charset=utf-8", "index.html"),
     "/index.html": ("text/html; charset=utf-8", "index.html"),
+    "/classic": ("text/html; charset=utf-8", "classic.html"),
+    "/classic.html": ("text/html; charset=utf-8", "classic.html"),
     "/styles.css": ("text/css; charset=utf-8", "styles.css"),
     "/app.js": ("text/javascript; charset=utf-8", "app.js"),
+    "/straight.js": ("text/javascript; charset=utf-8", "straight.js"),
     "/replay-data.js": ("text/javascript; charset=utf-8", "replay-data.js"),
     "/assets/repofuse-icon-clean.png": ("image/png",
                                         "assets/repofuse-icon-clean.png"),
@@ -200,6 +203,18 @@ def emit(run, stage, kind, text, data=None):
     with _lock:
         run["events"].append(ev)
         _persist_run_locked(run)
+        snap = None
+        if kind in ("error", "safety_blocked", "planning_refused", "blocked"):
+            snap = {"run_id": run.get("run_id"), "status": run.get("status"),
+                    "repo_a": run.get("repo_a"), "repo_b": run.get("repo_b"),
+                    "safety": run.get("safety"),
+                    "events": list(run.get("events") or [])[-40:]}
+    if snap is not None:
+        try:
+            from relay import record
+            record(ROOT, snap)
+        except (OSError, ValueError, TypeError):
+            pass
 
 
 def _load_pipeline():
@@ -243,6 +258,7 @@ def _vendor_stage(run, run_id, metas, intent=None):
         manifest["acceptance_criteria"] = criteria
         vendor_manifest = vendor_mod.vendor_repos(vmetas, fusion_dir)
         vendor_mod.write_import_shim(fusion_dir)
+        vendor_mod.write_surfaces(fusion_dir, vmetas, analyses)
         metas_lite = [{"slug": m["slug"], "url": m["url"],
                        "commit_sha": m["commit_sha"],
                        "readme_excerpt": m.get("readme_excerpt"),
@@ -2066,8 +2082,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, {"error": "This idea is selected as a proposal, not a build: " + why + ". No code generation or execution was requested."})
         # The runtime profile is independently narrow; model-proposed prose
         # cannot expand its imports, services, privileges or network access.
-        if card.get("external_services") or card.get("dependencies"):
-            return self._json(409, {"error": "The selected plan needs dependencies or external services not yet resolved by this executor. No build was started; model ideas are not execution approval."})
         if card.get("runtime") != "python-wsgi":
             return self._json(409, {"error": "This plan's runtime is unsupported by the current contained executor; only python-wsgi is installed. No build was started."})
         if not run or run.get("status") not in ("ideas_ready", "stopped_at_paid_boundary"):
@@ -2085,7 +2099,9 @@ class Handler(BaseHTTPRequestHandler):
             # This writes steering only; key-stripped free preparation.
             chosen = {"title": card["title"], "what": card["what"] + ". Frontend: "
                 + card["frontend"] + ". Backend: " + card["backend"]
-                + ". Integration: " + card["integration"]}
+                + ". Integration: " + card["integration"]
+                + ". Declared dependencies and external services are not "
+                  "installed, and the network stays closed."}
             # Do not silently truncate the selected model's full-stack plan
             # at the synthesis core's intent boundary.
             from repofuse.synthesize import MAX_INTENT_CHARS
@@ -2248,6 +2264,27 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, TypeError):
                 preview["source"] = None
         return self._json(200, preview)
+
+    def _relay(self):
+        """Store this run's own error sentence. The client cannot supply it."""
+        req = self._session_body()
+        if req is None:
+            return
+        rid = req.get("run_id") or ""
+        if not RUN_ID.fullmatch(rid):
+            return self._json(400, {"error": "Invalid local run id."})
+        with _lock:
+            run = _runs.get(rid)
+            snap = None if run is None else {
+                "run_id": rid, "status": run.get("status"),
+                "repo_a": run.get("repo_a"), "repo_b": run.get("repo_b"),
+                "safety": run.get("safety"),
+                "events": list(run.get("events") or [])[-40:]}
+        if snap is None:
+            return self._json(404, {"error": "Unknown local run."})
+        from relay import record
+        path = record(ROOT, snap)
+        return self._json(200, {"recorded": bool(path)})
 
     def _operator_review(self):
         """Record a confirmation of server-derived findings or digests.
@@ -2514,6 +2551,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/operator-review":
             return self._operator_review()
+        if path == "/api/relay":
+            return self._relay()
         if path == "/api/planning/select":
             return self._planning_select()
         if path == "/api/planning/generate":

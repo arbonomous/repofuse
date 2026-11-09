@@ -17,6 +17,8 @@ def test_object_fields_remain_json(monkeypatch):
     assert "function structured(v)" in page
     assert "JSON.stringify(v,null,2)" in page
     assert page.index("function structured") < page.index(".join(', ')")
+    assert "Add row" in page and "view-results" in page
+    assert "dataset.kind==='records'" in page
 
 def test_shell_real_json_roundtrip(monkeypatch):
  s=load(monkeypatch);c,b=call(s,'/api/run','POST',b'{"x":1}');assert c['status']=='200 OK';assert json.loads(b)=={'result':{'x':1}}

@@ -50,6 +50,20 @@ def test_armed_build_consumed_before_thread(http,monkeypatch):
 def test_no_http_approval_import_route(http):
  post,run,fr=http;assert post('/api/review-import',{})[0]==404
 
+def test_relay_records_the_servers_error_sentence(http,tmp_path,monkeypatch):
+ post,run,fr=http
+ monkeypatch.setattr(s,'ROOT',str(tmp_path))
+ run['status']='failed'
+ run['repo_a']='https://github.com/hummingbot/hummingbot'
+ run['repo_b']='https://github.com/drakkar-software/octobot'
+ run['events']=[{'kind':'error','stage':'error','text':'pipeline error: Static evidence exceeds the bounded analysis request.'}]
+ status,result=post('/api/relay',{'run_id':RID,'text':'client supplied sentence must be ignored'})
+ assert status==200 and result['recorded'] is True
+ saved=json.loads((tmp_path/'relay'/(RID+'.json')).read_text())
+ assert saved['text'].endswith('bounded analysis request.')
+ assert 'client supplied' not in json.dumps(saved)
+ assert post('/api/relay',{'run_id':'nope'})[0]==400
+
 def test_operator_review_records_echoed_findings_and_refuses_fail(http,tmp_path,monkeypatch):
  post,run,fr=http
  root=tmp_path/'studio';(root/'runs').mkdir(parents=True)

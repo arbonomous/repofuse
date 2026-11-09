@@ -1,156 +1,45 @@
 <!doctype html>
 <html lang="en">
 <head>
-<link rel="icon" type="image/png" href="/assets/repofuse-icon-clean.png">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RepoFuse Studio</title>
-<link rel="stylesheet" href="styles.css">
+<title>RepoFuse</title>
+<link rel="icon" type="image/png" href="/assets/repofuse-icon-clean.png">
+<link rel="stylesheet" href="/styles.css">
 </head>
-<body>
-
-<header id="topbar">
-  <div class="brand"><img class="brand-logo" src="/assets/repofuse-icon-clean.png" alt="RepoFuse logo"> RepoFuse <span class="brand-sub">Studio</span></div>
-  <div class="topbar-right">
-    <span class="replay-badge local" id="replay-badge" title="Runs locally; no model calls are made">
-      <span class="dot"></span> LOCAL DEMO &middot; no model calls
-    </span>
-    <button class="ghost-btn" id="whats-real-btn">What&rsquo;s real in this demo?</button>
-  </div>
+<body class="straight">
+<header class="s-top">
+  <div class="brand"><img class="brand-logo" src="/assets/repofuse-icon-clean.png" alt=""> RepoFuse</div>
+  <a class="ghost-btn" href="/classic">Earlier demo</a>
 </header>
-
-<!-- ============ SCREEN 1: SETUP ============ -->
-<section id="screen-setup" class="screen active">
-  <div class="hero">
-    <h1>Two repositories, one app.</h1>
-    <ol class="flow" aria-label="What happens after Suggest">
-      <li class="flow-step">1 Clone</li>
-      <li class="flow-step">2 Check</li>
-      <li class="flow-step">3 Record</li>
-      <li class="flow-step">4 Ideas</li>
-      <li class="flow-step">5 Build</li>
-      <li class="flow-step">6 Review</li>
-      <li class="flow-step">7 Verify</li>
-      <li class="flow-step">8 Serve</li>
-    </ol>
-    <p class="hero-sub">Leave the intent empty. A failed or unknown check stops. A warning is stored on this machine and the build continues. Replay is the recorded notes example.</p>
-  </div>
-  <div class="setup-card">
-    <details class="local-connect-card">
-      <summary>Meta connection for new builds</summary>
-      <p>Enter a Meta API key only here on this local Studio page. It stays in Studio process memory, is not saved to disk or sent in review packages, and clears when Studio restarts. Connecting makes no API request and does not start a build.</p>
-      <label class="field-label" for="local-meta-key">Meta API key</label>
-      <input id="local-meta-key" type="password" autocomplete="off" spellcheck="false" placeholder="Local session only">
-      <button id="local-meta-connect" class="replay-btn">Connect for this session</button>
-      <button id="local-meta-disconnect" class="ghost-btn">Disconnect and cancel armed run</button>
-      <p id="local-meta-status" class="setup-note">Checking local session...</p>
-      <p class="setup-note">A failed or unknown check stops the build. A warning is stored on this machine. Generated code runs in Linux containment, without network access, after its bytes are pinned. Call limits do not prevent card overage when credits expire or billing is delayed.</p>
-    </details>
-    <label class="field-label">Repository A</label>
-    <div class="repo-input"><span class="gh-icon">&#9679;</span>
-      <input id="repo-a" value="https://github.com/python-trio/sniffio" spellcheck="false">
+<main class="s-main">
+  <h1>Two repositories. One app.</h1>
+  <p class="s-lead">RepoFuse clones both repositories, checks them, asks Meta for an app that uses both, writes the integration, runs the tests in a sandbox, and serves it on this machine.</p>
+  <section class="s-card">
+    <label for="key">Meta key</label>
+    <div class="s-row">
+      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Stays in this Studio process">
+      <button id="connect" type="button">Connect</button>
     </div>
-    <label class="field-label">Repository B</label>
-    <div class="repo-input"><span class="gh-icon">&#9679;</span>
-      <input id="repo-b" value="https://github.com/python/mypy_extensions" spellcheck="false">
-    </div>
-    <label class="field-label">What should it do? <span class="field-opt">(optional - or let RepoFuse suggest)</span></label>
-    <textarea id="intent" rows="2" spellcheck="false" placeholder="Leave blank and RepoFuse suggests builds from what the repos actually contain."></textarea>
-    <button id="fuse-btn">Suggest what to build &#8594;</button>
-    <button id="replay-btn" class="replay-btn">Replay the recorded notes build (2026-11-04)</button>
-    <p id="replay-hint" class="setup-note"></p>
-    <label class="field-label" for="local-run-id">Retained run on this machine</label>
-    <input id="local-run-id" placeholder="run-0123456789abcdef" spellcheck="false">
-    <button id="open-local-run" class="replay-btn">Open retained local run (no generation)</button>
-    <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events. A failed or unknown check still stops.</p>
-    <p class="setup-note">Suggest follows the eight steps above. You do not type a name or approve each step. Replay never uses these two repositories.</p>
-  </div>
-</section>
-
-<!-- ============ SCREEN 2: BUILD ============ -->
-<section id="screen-build" class="screen">
-  <div id="live-flow" class="hidden">
-    <ol id="flow" class="flow" aria-label="This run">
-      <li id="flow-repos" class="flow-step wait"><b>1</b> Clone</li>
-      <li id="flow-check" class="flow-step wait"><b>2</b> Check</li>
-      <li id="flow-record" class="flow-step wait"><b>3</b> Record</li>
-      <li id="flow-ideas" class="flow-step wait"><b>4</b> Ideas</li>
-      <li id="flow-build" class="flow-step wait"><b>5</b> Build</li>
-      <li id="flow-review" class="flow-step wait"><b>6</b> Review</li>
-      <li id="flow-verify" class="flow-step wait"><b>7</b> Verify</li>
-      <li id="flow-serve" class="flow-step wait"><b>8</b> Serve</li>
-    </ol>
-    <div class="flow-row">
-      <p id="flow-status">Waiting to start.</p>
-      <button type="button" id="toggle-map" class="ghost-btn">Show map</button>
-    </div>
-  </div>
-  <div id="now-panel"></div>
-  <div class="build-grid">
-    <aside id="stage-rail"></aside>
-    <main id="build-canvas">
-      <div id="graph-wrap">
-        <svg id="graph" viewBox="0 0 900 420" preserveAspectRatio="xMidYMid meet"></svg>
-      </div>
-      <div id="code-panel">
-        <div id="ideas-cards" class="hidden"></div>
-        <div id="code-tabs"></div>
-        <pre id="code-view"><code id="code-content"></code></pre>
-        <div id="token-meter"></div>
-      </div>
-    </main>
-    <aside id="build-log"></aside>
-  </div>
-</section>
-
-<!-- ============ SCREEN 3: RESULT ============ -->
-<section id="screen-result" class="screen">
-  <div id="verdict-journey"></div>
-  <div class="result-grid">
-    <div class="app-preview-card">
-      <div class="app-preview-head">
-        <h2 id="result-app-title">Notes app - interactive preview</h2>
-        <span class="sim-badge" id="notes-backend-badge">checking backend&hellip;</span>
-      </div>
-      <p class="preview-truth" id="preview-truth"></p>
-      <div class="notes-app">
-        <div class="notes-input-row">
-          <input id="note-text" placeholder="Write a note&hellip;" spellcheck="false">
-          <button id="note-add">Save note</button>
-        </div>
-        <div id="notes-list"></div>
-      </div>
-    </div>
-    <div class="run-real-card" id="run-real-card">
-      <h2>Run the real thing</h2>
-      <pre class="run-snippet"><code>git clone &lt;private repo&gt;  # arbonomous/repofuse
-cd examples/notes-app-fusion/fused_app
-python3 -m unittest acceptance_test.py    # 4/4
-python3 -m unittest assistant_ext_test.py # 7/7
-python3 -c "import assistant_ext; from generated.app import app; app.run()"
-# (importing assistant_ext registers the edit/delete routes)</code></pre>
-      <div class="honesty-card">
-        <h3>Honest status</h3>
-        <ul>
-          <li>The model&rsquo;s <em>unedited</em> output failed all 4 acceptance checks at import.</li>
-          <li>The passing app is <strong>assistant-repaired</strong> (3 labeled fixes) and <strong>assistant-extended</strong> (edit/delete).</li>
-          <li>Unattended AI fusion is the goal - <strong>not yet proven</strong>.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- modal -->
-<div id="modal-backdrop" hidden>
-  <div id="modal">
-    <h2>What&rsquo;s real in this demo?</h2>
-    <div id="modal-body"></div>
-    <button class="ghost-btn" id="modal-close">Close</button>
-  </div>
-</div>
-
-<script src="replay-data.js"></script>
-<script src="app.js?v=38"></script>
+    <p id="key-status" class="s-note">Checking the session.</p>
+    <label for="repo-a">Repository A</label>
+    <input id="repo-a" value="https://github.com/python-trio/sniffio" spellcheck="false">
+    <label for="repo-b">Repository B</label>
+    <input id="repo-b" value="https://github.com/python/mypy_extensions" spellcheck="false">
+    <button id="build" type="button" class="s-go">Build</button>
+  </section>
+  <ol id="steps" class="s-steps" aria-label="Build">
+    <li data-step="clone">Clone</li>
+    <li data-step="check">Check</li>
+    <li data-step="ideas">Ideas</li>
+    <li data-step="build">Build</li>
+    <li data-step="app">App</li>
+  </ol>
+  <p id="status" class="s-status">Connect the key, then build.</p>
+  <section id="choice" class="s-card hidden"></section>
+  <p id="app-link" class="s-app"></p>
+  <ol id="log" class="s-log"></ol>
+</main>
+<script src="/straight.js"></script>
 </body>
 </html>

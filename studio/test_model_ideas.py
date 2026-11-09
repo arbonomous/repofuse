@@ -7,6 +7,14 @@ def metas():return {name:{'url':f'https://github.com/x/{name}','commit_sha':char
 def card():return dict(title='Joint app',what='Combine both',frontend='Browser form',backend='WSGI API',integration='Alpha calls Beta',runtime='python-wsgi',dependencies=['dep>=1'],external_services=[],risks=['Dependencies unresolved'],sources=[{'repo':'alpha','commit':'a'*40,'exports':['Alpha']},{'repo':'beta','commit':'b'*40,'exports':['Beta']}])
 def test_verified_sources_and_proposal_only():
  rows=m.evidence(metas());result=m.validate(json.dumps({'ideas':[card()]}),rows);assert result[0]['proposal_only'];assert not result[0]['execution_approved'];assert rows[0]['declared_dependencies']['dep']['spec']=='>=1'
+def test_citing_every_evidenced_export_is_accepted():
+ names=[f'Name{i}' for i in range(16)]
+ rows=[{'repo':'alpha','commit':'a'*40,'exports_sample':names[:6]},
+       {'repo':'beta','commit':'b'*40,'exports_sample':names}]
+ c=card();c['sources']=[{'repo':'alpha','commit':'a'*40,'exports':names[:6]},
+                       {'repo':'beta','commit':'b'*40,'exports':names}]
+ result=m.validate(json.dumps({'ideas':[c]}),rows)
+ assert result[0]['sources'][1]['exports']==names
 def test_fake_export_refuses():
  c=card();c['sources'][0]['exports']=['Fabricated']
  with pytest.raises(m.Refused):m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))
