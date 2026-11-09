@@ -2,7 +2,7 @@
 
 A supervised repository-integration prototype built during the Meta AI Developer Hackathon.
 
-Supply two public GitHub repository links. RepoFuse pins the commits, checks the inputs, asks Meta for an app that uses both, writes the integration and its tests, runs those tests in a sandbox, and serves the app on this machine. A failed or unknown check stops before any model call. The first idea that fits the contained Python app is the one that gets built.
+Supply two public GitHub repository links. RepoFuse pins the commits, checks the inputs, asks Meta for an app that uses both, writes the integration and its tests, runs those tests in a sandbox, and serves the app on this machine. A failed or unknown check stops before any model call. Dependencies this app does not install, and data files that are too large to read, stay on the check and do not stop the build. The first idea that fits the contained Python app is the one that gets built.
 
 ## Current demonstrated result
 

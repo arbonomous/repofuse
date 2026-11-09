@@ -6,16 +6,20 @@ reaches this choice.
 """
 
 
+def _usable(card):
+    return (isinstance(card, dict) and card.get("runtime") == "python-wsgi"
+            and card.get("id") and card.get("title"))
+
+
 def eligible_card(cards):
-    """First python-wsgi card with no extra dependencies or services."""
-    for card in cards or []:
-        if not isinstance(card, dict):
-            continue
-        if card.get("runtime") != "python-wsgi":
-            continue
-        if card.get("dependencies") or card.get("external_services"):
-            continue
-        if not card.get("id") or not card.get("title"):
-            continue
-        return card
-    return None
+    """First contained Python card.
+
+    A card with no extra packages or services is preferred. When every
+    Python card names some, the first one is still built: this app does
+    not install those packages or open those services.
+    """
+    usable = [card for card in cards or [] if _usable(card)]
+    for card in usable:
+        if not card.get("dependencies") and not card.get("external_services"):
+            return card
+    return usable[0] if usable else None

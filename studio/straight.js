@@ -121,11 +121,10 @@
   }
 
   function eligible(cards) {
-    return (cards || []).find((card) => card
-      && card.runtime === "python-wsgi"
-      && card.id && card.title
-      && !(card.dependencies || []).length
-      && !(card.external_services || []).length) || null;
+    const usable = (cards || []).filter((card) => card
+      && card.runtime === "python-wsgi" && card.id && card.title);
+    return usable.find((card) => !(card.dependencies || []).length
+        && !(card.external_services || []).length) || usable[0] || null;
   }
 
   function showChoice(chosen, cards) {
@@ -136,7 +135,10 @@
     title.textContent = chosen.title;
     box.appendChild(title);
     const why = document.createElement("p");
-    why.textContent = "This is the first idea that runs on the contained Python app, with no extra packages or services. The others stay as proposals.";
+    const extra = (chosen.dependencies || []).length || (chosen.external_services || []).length;
+    why.textContent = extra
+      ? "This idea names packages or services. They are not installed and the network stays closed. The app uses the standard library and the vendored source."
+      : "This is the first idea that runs on the contained Python app. The others stay as proposals.";
     box.appendChild(why);
     for (const card of cards) {
       if (card.id === chosen.id) continue;

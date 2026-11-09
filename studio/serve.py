@@ -258,6 +258,7 @@ def _vendor_stage(run, run_id, metas, intent=None):
         manifest["acceptance_criteria"] = criteria
         vendor_manifest = vendor_mod.vendor_repos(vmetas, fusion_dir)
         vendor_mod.write_import_shim(fusion_dir)
+        vendor_mod.write_surfaces(fusion_dir, vmetas, analyses)
         metas_lite = [{"slug": m["slug"], "url": m["url"],
                        "commit_sha": m["commit_sha"],
                        "readme_excerpt": m.get("readme_excerpt"),
@@ -2081,8 +2082,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, {"error": "This idea is selected as a proposal, not a build: " + why + ". No code generation or execution was requested."})
         # The runtime profile is independently narrow; model-proposed prose
         # cannot expand its imports, services, privileges or network access.
-        if card.get("external_services") or card.get("dependencies"):
-            return self._json(409, {"error": "The selected plan needs dependencies or external services not yet resolved by this executor. No build was started; model ideas are not execution approval."})
         if card.get("runtime") != "python-wsgi":
             return self._json(409, {"error": "This plan's runtime is unsupported by the current contained executor; only python-wsgi is installed. No build was started."})
         if not run or run.get("status") not in ("ideas_ready", "stopped_at_paid_boundary"):
@@ -2100,7 +2099,9 @@ class Handler(BaseHTTPRequestHandler):
             # This writes steering only; key-stripped free preparation.
             chosen = {"title": card["title"], "what": card["what"] + ". Frontend: "
                 + card["frontend"] + ". Backend: " + card["backend"]
-                + ". Integration: " + card["integration"]}
+                + ". Integration: " + card["integration"]
+                + ". Declared dependencies and external services are not "
+                  "installed, and the network stays closed."}
             # Do not silently truncate the selected model's full-stack plan
             # at the synthesis core's intent boundary.
             from repofuse.synthesize import MAX_INTENT_CHARS

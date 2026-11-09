@@ -29,8 +29,10 @@ def test_first_buildable_card_is_chosen():
     assert chosen["id"] == "keep"
 
 
-def test_nothing_buildable_returns_none():
-    assert eligible_card([card(dependencies=["x"]), {"runtime": "python-wsgi"}]) is None
+def test_a_python_card_with_declared_services_is_still_built():
+    chosen = eligible_card([card(dependencies=["x"], title="Local only")])
+    assert chosen["title"] == "Local only"
+    assert eligible_card([{"runtime": "python-wsgi"}, card(runtime="node")]) is None
     assert eligible_card(None) is None
 
 

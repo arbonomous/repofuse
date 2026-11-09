@@ -127,3 +127,66 @@ def write_import_shim(fusion_dir):
     with open(path, "w", encoding="utf-8") as f:
         f.write(IMPORT_SHIM)
     return path
+
+
+_SURFACE = '''"""Read-only surface for one vendored repository. Does not execute it."""
+import os
+
+SLUG = {slug!r}
+EXPORTS = {exports!r}
+
+
+def exports():
+    return list(EXPORTS)
+
+
+def read_text(rel, limit=4000):
+    if not isinstance(rel, str) or rel.startswith(("/", "\\\\")) or "\\\\" in rel:
+        raise ValueError("path must stay inside the vendored repository")
+    if ".." in rel.split("/"):
+        raise ValueError("path must stay inside the vendored repository")
+    if not isinstance(limit, int):
+        limit = 4000
+    limit = max(1, min(limit, 8000))
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", SLUG))
+    full = os.path.abspath(os.path.join(root, rel))
+    if os.path.commonpath((root, full)) != root or os.path.islink(full) or not os.path.isfile(full):
+        raise ValueError("regular file inside the vendored repository required")
+    with open(full, encoding="utf-8", errors="replace") as handle:
+        return handle.read(limit)
+'''
+
+
+def write_surfaces(fusion_dir, metas, analyses=None):
+    """Add an importable Python module for every vendored repository.
+
+    A JavaScript repository has no package the glue can import. This module
+    lists the static export names and reads vendored files. It does not run
+    the repository.
+    """
+    from .api_evidence import python_ident
+    folder = os.path.join(fusion_dir, "vendor", "surfaces")
+    os.makedirs(folder, exist_ok=True)
+    init = os.path.join(folder, "__init__.py")
+    if not os.path.exists(init):
+        with open(init, "w", encoding="utf-8") as handle:
+            handle.write('"""Importable surfaces for vendored repositories."""\n')
+    by_slug = {}
+    for analysis in analyses or []:
+        if isinstance(analysis, dict) and analysis.get("slug"):
+            by_slug[analysis["slug"]] = analysis
+    written = []
+    for meta in metas or []:
+        slug = meta.get("slug") or ""
+        ident = python_ident(slug)
+        names = []
+        for name in (by_slug.get(slug) or {}).get("exports") or []:
+            if isinstance(name, str) and name.isidentifier() and len(name) <= 80:
+                names.append(name)
+            if len(names) >= 80:
+                break
+        path = os.path.join(folder, ident + ".py")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(_SURFACE.format(slug=slug, exports=tuple(names)))
+        written.append(ident)
+    return written

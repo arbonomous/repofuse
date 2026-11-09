@@ -8,9 +8,10 @@ not a guarantee: a clean verdict never means "proven harmless".
 
 Verdicts per repo: pass / warn / fail / unknown. Aggregation is
 fail > unknown > warn > pass. BLOCKING = fail, unknown, or an
-unacknowledged warn: any required check that is unknown (offline advisory,
-unresolved version/ecosystem/commit) blocks, and a warn blocks spending or
-execution until a reviewer explicitly acknowledges it.
+unacknowledged warn. An offline advisory, a missing commit, a malformed
+spec, or a failed advisory read is unknown and blocks. A dependency this
+build does not install is reported and does not block. A warn blocks
+spending or execution until a reviewer explicitly acknowledges it.
 
 Coverage is exactly what the verdict says: the repo itself (via its commit
 advisory mapping) plus PINNED DIRECT dependencies. Transitive dependencies
@@ -231,9 +232,16 @@ def static_scan(path):
                                        "target"})
             continue
         if kind in ("oversize", "unreadable"):
-            findings.append({"rule": kind, "severity": Verdict.UNKNOWN,
-                             "file": os.path.relpath(full, path),
-                             "detail": f"file {kind} - not fully scanned"})
+            source = (os.path.splitext(name)[1] in _SOURCE_EXT
+                      or name == "setup.py")
+            findings.append({
+                "rule": kind,
+                "severity": Verdict.UNKNOWN if source else Verdict.WARN,
+                "file": os.path.relpath(full, path),
+                "detail": ("source file not fully scanned"
+                           if source else
+                           "non-source file not fully scanned and not executed"),
+            })
             continue
         if os.path.splitext(name)[1] in _SOURCE_EXT or name == "setup.py":
             scanned += 1
@@ -251,6 +259,13 @@ def _pinned_version(spec):
     anything carrying flags or options are not sent to OSV."""
     m = re.match(r"^==\s*([A-Za-z0-9._+-]+)$", (spec or "").strip())
     return m.group(1) if m else None
+
+
+def _malformed_spec(spec):
+    """Option injection and URLs are not ordinary uninstalled requirements."""
+    text = spec or ""
+    return ("--" in text or ";" in text or "://" in text
+            or "\n" in text or "\x00" in text)
 
 
 def _ecosystem(via):
@@ -273,13 +288,14 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
     ecosystem). Transitive dependencies are NOT resolved - every verdict
     states that scope. OFF by default (offline mode); unreachable,
     timeout, or malformed response = UNKNOWN, reported as a failed read.
-    Anything unresolved (no commit reference, unpinned dep, unknown
-    ecosystem) = UNKNOWN = blocks. Never raises, never fabricates a check:
-    queries_made reports the real count.
+    A missing commit, a malformed spec, or a failed read is UNKNOWN and
+    blocks. A dependency this build does not install is reported in
+    not_installed and does not change the verdict. Never raises, never
+    fabricates a check: queries_made reports the real count.
     """
     out = {"status": Verdict.UNKNOWN, "source": "offline mode",
            "queries_made": 0, "vulnerabilities": [], "unresolved": [],
-           "development_unresolved": [],
+           "not_installed": [], "development_unresolved": [],
            "scope": "repo commit advisory + pinned direct dependencies "
                     "only; transitive dependencies are not resolved. "
                     "Development extras are reported and are not a runtime block",
@@ -295,17 +311,22 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
                                             "advisory mapping"})
     for name, info in sorted((deps or {}).items()):
         via = info.get("via", "")
-        ver = _pinned_version(info.get("spec"))
+        spec = info.get("spec") or "*"
+        ver = _pinned_version(spec)
         eco = _ecosystem(via)
-        item = {"name": name, "spec": info.get("spec") or "*", "via": via,
+        item = {"name": name, "spec": spec, "via": via,
                 "reason": "unresolved version" if not ver else
                 "unresolved ecosystem"}
         if info.get("dev"):
             if not ver or not eco:
                 out["development_unresolved"].append(item)
             continue
-        if not ver or not eco:
+        if _malformed_spec(spec):
             out["unresolved"].append(item)
+            continue
+        if not ver or not eco:
+            item["reason"] = "not installed by this build"
+            out["not_installed"].append(item)
             continue
         queries.append({"package": {"name": name, "ecosystem": eco},
                         "version": ver})
@@ -365,6 +386,10 @@ def osv_check(deps, repo_commit=None, allow_network=False, opener=None):
         if extras:
             note += (f" {len(extras)} development extra(s) are outside "
                      "this runtime check and do not change the verdict.")
+        skipped = out.get("not_installed") or []
+        if skipped:
+            note += (f" {len(skipped)} declared dependency(ies) are not "
+                     "installed by this build and were not queried.")
         out.update({"status": status, "source": OSV_QUERYBATCH,
                     "queries_made": len(queries),
                     "vulnerabilities": vulns, "note": note})

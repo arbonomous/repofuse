@@ -84,6 +84,15 @@ class TestStaticScan(RepoFixture):
         self.assertTrue(any(f["rule"] == "install-hook"
                             for f in r["findings"]))
 
+    def test_oversized_data_warns_and_oversized_source_is_unknown(self):
+        self.w("history.data", "x" * (safety._MAX_FILE_BYTES + 1))
+        warned = safety.static_scan(self.dir)
+        self.assertEqual(warned["status"], safety.Verdict.WARN)
+        self.assertIn("not executed", warned["findings"][0]["detail"])
+        self.w("huge.py", "y" * (safety._MAX_FILE_BYTES + 1))
+        unknown = safety.static_scan(self.dir)
+        self.assertEqual(unknown["status"], safety.Verdict.UNKNOWN)
+
     def test_package_json_postinstall_warns(self):
         self.w("package.json",
                '{"name": "x", "scripts": {"postinstall": "node x.js"}}')
@@ -184,23 +193,29 @@ class TestOsvAdvisory(unittest.TestCase):
         self.assertEqual(r["development_unresolved"][0]["name"], "pytest")
         self.assertEqual(r["unresolved"], [])
 
-    def test_unpinned_dep_makes_status_unknown(self):
+    def test_unpinned_dep_is_not_installed_and_does_not_block(self):
         r = safety.osv_check(self.DEPS, repo_commit=self.COMMIT,
                              allow_network=True,
                              opener=lambda req, timeout=None: self._resp(
                                  {"results": [{}, {}, {}]}))
-        self.assertEqual(r["status"], safety.Verdict.UNKNOWN)
-        self.assertIn("unresolved", r["note"])
-        self.assertEqual(r["queries_made"], 3)  # queries really happened
+        self.assertEqual(r["status"], safety.Verdict.WARN)
+        self.assertEqual(r["not_installed"][0]["name"], "loose")
+        self.assertEqual(r["not_installed"][0]["reason"],
+                         "not installed by this build")
+        self.assertEqual(r["unresolved"], [])
+        self.assertIn("not installed", r["note"])
+        self.assertEqual(r["queries_made"], 3)  # commit plus two exact pins
 
-    def test_unresolved_ecosystem_is_unknown_never_guessed(self):
+    def test_unknown_ecosystem_is_not_queried_or_guessed(self):
         r = safety.osv_check({"x": {"spec": "==1.0", "via": "Gemfile.lock"}},
                              repo_commit=self.COMMIT, allow_network=True,
                              opener=lambda req, timeout=None: self._resp(
                                  {"results": [{}]}))
-        self.assertEqual(r["status"], safety.Verdict.UNKNOWN)
-        self.assertEqual(r["unresolved"][0]["reason"],
-                         "unresolved ecosystem")
+        self.assertEqual(r["status"], safety.Verdict.WARN)
+        self.assertEqual(r["queries_made"], 1)
+        self.assertEqual(r["not_installed"][0]["reason"],
+                         "not installed by this build")
+        self.assertEqual(r["unresolved"], [])
 
     def test_version_allowlist_blocks_raw_options(self):
         r = safety.osv_check({"evil": {"spec": "==1.0 --index-url http://x",
