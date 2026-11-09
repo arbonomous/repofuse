@@ -10,6 +10,8 @@ def test_prompt_names_exact_runtime_literal():
  text=m.messages(rows)[0]['content'];assert 'exact literal python-wsgi, not explanatory prose' in text
  assert 'Put the runtime explanation in backend or risks' in text
  assert 'unresolved needs may be omitted' in text
+ assert 'everyday words a person can follow' in text
+ assert 'what a larger number or a yes means' in text
  assert 'other runtimes honestly' in text
  assert 'never pretend they run here' in text
 
