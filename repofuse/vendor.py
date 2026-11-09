@@ -38,6 +38,7 @@ def vendor_repos(metas, fusion_dir):
     count = 0
     truncated = False
     seen_slugs = {}
+    share = max(1, _MAX_VENDOR_FILES // max(1, len(metas)))
     for m in metas:
         src, slug = m["path"], m["slug"]
         if slug in seen_slugs and seen_slugs[slug] != m["url"]:
@@ -47,12 +48,15 @@ def vendor_repos(metas, fusion_dir):
         dest = os.path.join(vendor_root, slug)
         if os.path.exists(dest):
             shutil.rmtree(dest)
+        repo_count = 0
+        repo_truncated = False
         for root, dirs, files in os.walk(src, followlinks=False):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS
                        and not os.path.islink(os.path.join(root, d))]
             for fn in files:
-                if count >= _MAX_VENDOR_FILES:
+                if repo_count >= share or count >= _MAX_VENDOR_FILES:
                     truncated = True
+                    repo_truncated = True
                     break
                 full = os.path.join(root, fn)
                 if os.path.islink(full):
@@ -67,10 +71,9 @@ def vendor_repos(metas, fusion_dir):
                     raise IOError(f"vendor readback mismatch: {slug}/{rel}")
                 hashes[f"{slug}/{rel}"] = src_hash
                 count += 1
-            if truncated:
+                repo_count += 1
+            if repo_truncated:
                 break
-        if truncated:
-            break
         entries.append({
             "slug": slug, "url": m["url"], "commit_sha": m["commit_sha"],
             "license_guess": m["license_guess"],
@@ -97,13 +100,62 @@ same name, the path shim alone applies, exactly as before - aliasing never
 masks a different-name package and never swallows the real one's identity.
 """
 import importlib as _il
+import importlib.abc as _abc
+import importlib.machinery as _mach
 import os
 import sys
 
 VENDOR = os.path.dirname(os.path.abspath(__file__))
+_SKIP = {"surfaces", "__pycache__"}
+
+
+class _LenientInit(_abc.Loader):
+    """Run a package __init__. A missing third-party import leaves the
+    package in place so a pure submodule can still load."""
+
+    def __init__(self, origin, pkg_dir):
+        self.origin = origin
+        self.pkg_dir = pkg_dir
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        module.__path__ = [self.pkg_dir]
+        module.__package__ = module.__name__
+        module.__file__ = self.origin
+        try:
+            with open(self.origin, encoding="utf-8") as handle:
+                code = compile(handle.read(), self.origin, "exec")
+            exec(code, module.__dict__)
+        except ModuleNotFoundError:
+            pass
+
+
+class _VendoredFinder(_abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if not path:
+            return None
+        child = fullname.rpartition(".")[2]
+        for entry in path:
+            if os.path.commonpath((os.path.abspath(entry), VENDOR)) != VENDOR:
+                continue
+            pkg = os.path.join(entry, child)
+            init = os.path.join(pkg, "__init__.py")
+            mod = os.path.join(entry, child + ".py")
+            if os.path.isfile(init) and not os.path.islink(init):
+                spec = _mach.ModuleSpec(
+                    fullname, _LenientInit(init, pkg), origin=init, is_package=True)
+                spec.has_location = True
+                return spec
+        return None
+
+
+if not any(isinstance(f, _VendoredFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _VendoredFinder())
 for _name in sorted(os.listdir(VENDOR)):
     _base = os.path.join(VENDOR, _name)
-    if not os.path.isdir(_base):
+    if _name in _SKIP or not os.path.isdir(_base):
         continue
     for _cand in (_base, os.path.join(_base, "src"),
                   os.path.join(_base, "lib")):
@@ -112,7 +164,7 @@ for _name in sorted(os.listdir(VENDOR)):
 for _name in sorted(os.listdir(VENDOR)):
     _base = os.path.join(VENDOR, _name)
     _key = __name__ + "." + _name
-    if not os.path.isdir(_base) or _key in sys.modules:
+    if _name in _SKIP or not os.path.isdir(_base) or _key in sys.modules:
         continue
     try:
         sys.modules[_key] = _il.import_module(_name)
@@ -140,6 +192,33 @@ def exports():
     return list(EXPORTS)
 
 
+def _find_export(root, name):
+    if not name or "/" in name or not name.replace("_", "a").isalnum():
+        return None
+    seen = 0
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "__pycache__")]
+        for fn in files:
+            if not fn.endswith((".py", ".ts", ".tsx", ".js", ".jsx")):
+                continue
+            seen += 1
+            if seen > 400:
+                return None
+            path = os.path.join(base, fn)
+            if os.path.islink(path):
+                continue
+            try:
+                if os.path.getsize(path) > 200000:
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    text = handle.read(200000)
+            except OSError:
+                continue
+            if name in text:
+                return os.path.abspath(path)
+    return None
+
+
 def read_text(rel, limit=4000):
     if not isinstance(rel, str) or rel.startswith(("/", "\\\\")) or "\\\\" in rel:
         raise ValueError("path must stay inside the vendored repository")
@@ -149,8 +228,13 @@ def read_text(rel, limit=4000):
         limit = 4000
     limit = max(1, min(limit, 8000))
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", SLUG))
-    full = os.path.abspath(os.path.join(root, rel))
-    if os.path.commonpath((root, full)) != root or os.path.islink(full) or not os.path.isfile(full):
+    direct = os.path.abspath(os.path.join(root, rel))
+    full = direct if os.path.commonpath((root, direct)) == root else None
+    if full is None or os.path.islink(full) or not os.path.isfile(full):
+        full = _find_export(root, rel)
+    if not full or os.path.islink(full) or not os.path.isfile(full):
+        raise ValueError("regular file inside the vendored repository required")
+    if os.path.commonpath((root, full)) != root:
         raise ValueError("regular file inside the vendored repository required")
     with open(full, encoding="utf-8", errors="replace") as handle:
         return handle.read(limit)
