@@ -109,3 +109,27 @@ def test_planning_generate_checks_safety_before_arm(http,tmp_path,monkeypatch):
  assert status==403 and 'safety gate' in body['error']
  assert s._local_session.status()['armed_run'] is None
  assert not (root/'session-envelope.json').exists() and not (fr/'session-envelope.json').exists()
+
+def test_local_operator_stores_warnings_and_refuses_fail(tmp_path):
+ import operator_review
+ run={'run_id':RID,'events':[{'data':{'slug':'a','commit':'a'*40}}],'safety':{'status':'fail','repos':[{'repo':'a','commit':'a'*40,'status':'fail','blocking':True,'static':{'findings':[]},'dependencies':{'status':'fail','note':'vuln'}}]}}
+ (tmp_path/'runs').mkdir();(tmp_path/'runs'/(RID+'-state.json')).write_text(json.dumps(run))
+ with pytest.raises(operator_review.Refused):operator_review.record_local_warnings(tmp_path,run)
+ assert not (tmp_path/'safety-acks').exists()
+ run['safety']={'status':'warn','repos':[{'repo':'a','commit':'a'*40,'status':'warn','blocking':False,'static':{'findings':[]},'dependencies':{'status':'warn','note':'empty'}}]}
+ (tmp_path/'runs'/(RID+'-state.json')).write_text(json.dumps(run))
+ out=operator_review.record_local_warnings(tmp_path,run)
+ assert out['safety_record_imported'] is True and out['whole_tree_imported'] is False
+ ack=json.loads((tmp_path/'safety-acks'/(RID+'.json')).read_text())
+ assert ack['reviewer']=='local operator' and ack['run_id']==RID and 'files' not in ack
+
+def test_local_operator_stores_disclosure_hash(tmp_path):
+ import operator_review
+ from model_ideas import prepare
+ metas={name:{'url':f'https://github.com/x/{name}','commit_sha':char*40,'license_guess':'MIT','readme_excerpt':'public','analysis':{'exports':[export],'dependencies':{}}} for name,char,export in [('alpha','a','Alpha'),('beta','b','Beta')]}
+ planning=tmp_path/'runs'/(RID+'-planning');planning.mkdir(parents=True);(planning/'metas.json').write_text(json.dumps(metas))
+ out=operator_review.record_local_disclosure(tmp_path,RID,metas)
+ assert out['disclosure_imported'] is True and out['execution_approved'] is False
+ recorded=json.loads((tmp_path/'disclosure-acks'/(RID+'.json')).read_text())
+ assert recorded['reviewer']=='local operator' and recorded['execution_approved'] is False
+ assert recorded['payload_sha256']==prepare(metas,RID)[-1]['payload_sha256']

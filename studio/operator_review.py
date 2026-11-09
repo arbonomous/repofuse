@@ -52,6 +52,9 @@ def _recordable(verdict):
     return status
 
 
+LOCAL_OPERATOR = "local operator"
+
+
 def _reviewer(value):
     if not isinstance(value, str) or len(value.strip()) < 2 or len(value) > 120:
         raise Refused("Enter the name of the person who read this.")
@@ -74,12 +77,12 @@ def _write_record(studio_root, record):
         raise
 
 
-def record_input(studio_root, run, reviewer, findings):
+def record_input(studio_root, run, reviewer, findings, note=None):
     verdict = run.get("safety")
     _recordable(verdict)
     if findings != finding_lines(verdict):
         raise Refused("The confirmed findings do not match this run.")
-    record = dict(_binding(run), reviewer=_reviewer(reviewer), note=(
+    record = dict(_binding(run), reviewer=_reviewer(reviewer), note=note or (
         "Recorded on the local Studio page after these finding lines "
         "were shown. This does not approve execution, and it cannot "
         "clear a failed or unknown check."))
@@ -88,6 +91,23 @@ def record_input(studio_root, run, reviewer, findings):
         return import_review(path, studio_root)
     finally:
         path.unlink(missing_ok=True)
+
+
+def record_local_warnings(studio_root, run):
+    """Store this run's own warning lines. Fail and unknown still refuse."""
+    return record_input(
+        studio_root, run, LOCAL_OPERATOR, finding_lines(run.get("safety")),
+        note=("Stored by local Studio for this run's warning lines. "
+              "This does not approve execution, and it cannot clear a "
+              "failed or unknown check."))
+
+
+def record_local_disclosure(studio_root, run_id, metas):
+    """Store the hash of the unsent public request this run would send."""
+    from model_ideas import prepare
+    bound = prepare(metas, run_id)[-1]
+    return record_disclosure(
+        studio_root, run_id, metas, LOCAL_OPERATOR, bound.get("payload_sha256"))
 
 
 def record_disclosure(studio_root, run_id, metas, reviewer, payload_sha256):

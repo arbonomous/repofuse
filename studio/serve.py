@@ -764,13 +764,39 @@ def run_pipeline(run_id, repo_a, repo_b, intent):
             with _lock:
                 run["status"] = "stopped_safety_blocked"
             return
+        with _lock:
+            _persist_run_locked(run)
+        from operator_review import (record_local_disclosure,
+                                     record_local_warnings, Refused)
+        try:
+            record_local_disclosure(ROOT, run_id, planning_metas)
+        except (Refused, OSError, TypeError, KeyError) as exc:
+            emit(run, "planning", "log",
+                 "The unsent request hash was not stored, stated exactly: "
+                 + str(exc)[:200]
+                 + " Idea generation stays blocked until that hash matches.")
+        else:
+            emit(run, "planning", "log",
+                 "The unsent public request hash is stored on this machine. "
+                 "Generating ideas sends that metadata. Nothing runs yet.")
         if run_verdict["status"] == "warn":
-            emit(run, "safety", "log",
-                 "WARN present: free stages may continue, but spending and "
-                 "execution require an explicit reviewer acknowledgment - "
-                 "this screen never grants it. Static findings are "
-                 "matching signals, not proof of absence; an empty "
-                 "advisory result does not establish indexed coverage.")
+            try:
+                record_local_warnings(ROOT, run)
+            except (Refused, OSError, TypeError, KeyError) as exc:
+                emit(run, "safety", "log",
+                     "Warning lines were not stored, stated exactly: "
+                     + str(exc)[:200]
+                     + " Spending stays blocked. A failed or unknown check "
+                     "cannot be stored.")
+            else:
+                emit(run, "safety", "log",
+                     "Warning lines are stored on this machine for this run. "
+                     "Spending can continue. A failed or unknown check is "
+                     "not stored. Static findings are matching signals, not "
+                     "proof of absence; an empty advisory result does not "
+                     "establish indexed coverage. Generated code still "
+                     "cannot run until these exact bytes are pinned and the "
+                     "contained tests pass.")
         emit(run, "safety", "stage_done",
              "Safety qualification complete: "
              f"{run_verdict['status'].upper()}.")
