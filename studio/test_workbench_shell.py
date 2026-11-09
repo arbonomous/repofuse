@@ -12,18 +12,24 @@ def call(s,path='/',method='GET',raw=b'',length=None):
  def sr(status,headers):capture['status']=status;capture['headers']=dict(headers)
  body=b''.join(s.app(env,sr));return capture,body
 
-def test_object_fields_remain_json(monkeypatch):
+def test_result_page_explains_itself(monkeypatch):
     page = load(monkeypatch).HTML_PAGE
     assert "function structured(v)" in page
     assert "JSON.stringify(v,null,2)" in page
     assert page.index("function structured") < page.index(".join(', ')")
-    assert "Add row" in page and "view-results" in page
+    assert "Add another" in page and "view-results" in page
     assert "dataset.kind==='records'" in page
+    assert "dataset.kind==='flat'" in page
+    assert "How to use this" in page
+    assert "What this means" in page
+    assert "Your settings" in page and "Your answer" in page
+    assert "Yes" in page and "No" in page
+    assert "This page runs on your computer" in page
 
 def test_shell_real_json_roundtrip(monkeypatch):
  s=load(monkeypatch);c,b=call(s,'/api/run','POST',b'{"x":1}');assert c['status']=='200 OK';assert json.loads(b)=={'result':{'x':1}}
  c,b=call(s,'/api/describe');assert json.loads(b)['title']=='Fixed fixture'
- c,b=call(s);assert b'Fixed RepoFuse HTTP/UI shell' in b
+ c,b=call(s);assert b'This page runs on your computer' in b
 @pytest.mark.parametrize('length,code',[('',400),('-1',400),('abc',400),('65537',413),('99999999999999999',413),('１２',400)])
 def test_lengthguards(monkeypatch,length,code):
  c,b=call(load(monkeypatch),'/api/run','POST',length=length);assert c['status'].startswith(str(code))
