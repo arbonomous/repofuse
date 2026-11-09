@@ -82,6 +82,29 @@
       : state === "running" ? "&#10227;" : state === "blocked" ? "&#10073;" : "&#9675;";
     if (meta !== undefined) el.querySelector(".stage-meta").textContent = meta;
   }
+  const FLOW_IDS = ["repos", "check", "record", "ideas", "build", "review", "verify", "serve"];
+  function setFlow(id, state) {
+    const el = document.getElementById("flow-" + id);
+    if (!el) return;
+    el.classList.remove("wait", "now", "done", "stopped");
+    el.classList.add(state);
+  }
+  function resetFlow() {
+    FLOW_IDS.forEach(id => setFlow(id, "wait"));
+    const panel = document.getElementById("now-panel");
+    if (panel) panel.textContent = "";
+    flowStatus("Cloning and pinning both repositories.");
+  }
+  function flowStatus(text) {
+    const el = document.getElementById("flow-status");
+    if (el) el.textContent = text;
+  }
+  function placeNow(panel) {
+    const host = document.getElementById("now-panel");
+    if (!host) { logEl.appendChild(panel); return; }
+    host.textContent = "";
+    host.appendChild(panel);
+  }
 
   /* ---------------- log ---------------- */
   const logEl = $("#build-log");
@@ -354,7 +377,7 @@
     panel.appendChild(title);
     const msg = document.createElement("p");
     panel.appendChild(msg);
-    logEl.appendChild(panel);
+    placeNow(panel);
     let preview;
     try {
       const response = await fetch("/api/operator-review/" + runId);
@@ -443,11 +466,19 @@
           body: JSON.stringify({run_id: runId, stage: "source", reviewer: name.value, tree_sha256: preview.source.tree_sha256})});
         const data = await r.json();
         msg.textContent = data.error || "Source review recorded. Verify runs the contained tests. It does not generate again.";
+        if (r.ok) {
+          setFlow("review", "done");
+          setFlow("verify", "now");
+          flowStatus("Tree recorded. Verify runs the contained tests.");
+        }
         if (!r.ok) button.disabled = false;
       } catch (_) { msg.textContent = "Source review was not recorded."; button.disabled = false; }
     };
     panel.appendChild(button);
-    logEl.appendChild(panel);
+    placeNow(panel);
+    setFlow("build", "done");
+    setFlow("review", "now");
+    flowStatus("Read the generated files and record this tree hash. Nothing has run yet.");
   }
 
   function showModelPlanning(runId, coverage, preview) {
@@ -460,7 +491,7 @@
     panel.appendChild(note);
     for (const item of (coverage || [])) {
       const p = document.createElement("p");
-      p.textContent = `Evidence: ${item.exports_included}/${item.exports_total} exports; ${item.dependencies_included}/${item.dependencies_total} dependencies; README up to ${item.readme_excerpt_limit} characters. ${item.excluded}`;
+      p.textContent = `Evidence: ${item.exports_included}/${item.exports_total} exports; ${item.dependencies_included}/${item.dependencies_total} dependencies.`;
       panel.appendChild(p);
     }
     const download = document.createElement("a");
@@ -516,13 +547,25 @@
         const r = await fetch("/api/planning/generate", {method:"POST", headers:{"Content-Type":"application/json"},
           body:JSON.stringify({run_id:runId,public_inputs:publicCheck.checked,credit_review:creditCheck.checked})});
         const result = await r.json();
-        if (!r.ok || result.error) {msg.textContent = result.error || "Model planning refused."; return;}
+        if (!r.ok || result.error) {
+          msg.textContent = result.error || "Model planning refused.";
+          setFlow("ideas", "stopped");
+          flowStatus(result.error || "Idea generation was refused. This attempt is kept and is not retried.");
+          return;
+        }
         msg.textContent = `Ideas from ${result.source}; usage ${result.usage.prompt_tokens} input / ${result.usage.completion_tokens} output tokens. No source execution approved.`;
+        setFlow("ideas", "done");
+        flowStatus("Pick one idea below. The same run builds it.");
         renderFullstackModelIdeas(runId, result);
       } catch (e) {msg.textContent = "Planning response unavailable. Check retained attempt before any retry: " + String(e);}
       finally {button.disabled = false;}
     };
-    panel.appendChild(button); addWorkflowStatus(panel, runId); logEl.appendChild(panel);
+    panel.appendChild(button); addWorkflowStatus(panel, runId); placeNow(panel);
+    setFlow("record", "done");
+    setFlow("ideas", "now");
+    flowStatus(preview && preview.disclosure_ready
+      ? "Request already recorded. Check both boxes, then generate ideas."
+      : "Record the unsent request hash, check both boxes, then generate ideas.");
   }
 
   function renderFullstackModelIdeas(runId, result) {
@@ -546,6 +589,9 @@
         const data = await r.json(); note.textContent = data.error || data.message || "Selection could not be checked.";
         if (r.ok && data.status === "running") {
           lastBuildGeneral = true;
+          setFlow("ideas", "done");
+          setFlow("build", "now");
+          flowStatus("Building the idea you picked in this same run.");
           pollLive(runId, liveSeen);
         }
       };
@@ -661,6 +707,8 @@
       body: JSON.stringify({ run_id: runId }),
     }).then(r => r.json()).then(resp => {
       if (resp.error) { verdict(`serving refused honestly: ${resp.error}`, "fail"); return; }
+      setFlow("serve", "done");
+      flowStatus("Served at " + resp.url);
       const line = document.createElement("div");
       line.className = "log-line";
       line.appendChild(document.createTextNode(
@@ -713,6 +761,11 @@
       return;
     }
     lastRunId = resp.run_id; lastBuildGeneral = false; liveSeen = 0;
+    document.body.classList.add("live-run");
+    $("#live-flow").classList.remove("hidden");
+    $("#graph-wrap").classList.add("collapsed");
+    resetFlow();
+    setFlow("repos", "now");
     setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
     show("#screen-build");
     buildRail([
@@ -790,6 +843,9 @@
             verdict("STOPPED BY SAFETY CHECKS - a required check failed "
                     + "or is unknown; nothing spent, nothing executed",
                     "fail");
+            setFlow("repos", "done");
+            setFlow("check", "stopped");
+            flowStatus("Stopped. A failed or unknown check cannot continue, and nothing was spent.");
             showBuildGate(runId);
             continue;
           }
@@ -799,6 +855,10 @@
             setStage("safety", "done", meta);
             setStage("vendor", "running");
             logText(ev.text);
+            setFlow("repos", "done");
+            setFlow("check", "done");
+            setFlow("record", "now");
+            flowStatus("Read every safety line, then record them. Recording does not approve running code.");
             showBuildGate(runId);
             continue;
           }
@@ -842,6 +902,9 @@
         if (ev.kind === "stage_done" && ev.stage === "ingest") {
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "running");
+          setFlow("repos", "done");
+          setFlow("check", "now");
+          flowStatus("Both repositories are pinned. The safety check is running.");
         }
         if (ev.kind === "stage_done" && ev.stage === "analyze") {
           setStage("analyze", "done", "exports mapped");
@@ -863,7 +926,10 @@
         if (ev.kind === "stage_done" && ev.stage === "verify" && lastBuildGeneral
             && ev.text && ev.text.indexOf("PASSED") !== -1) {
           setStage("verify", "done", "sandbox verify passed");
-
+          setFlow("review", "done");
+          setFlow("verify", "done");
+          setFlow("serve", "now");
+          flowStatus("Contained tests passed. Serve opens the app on this machine.");
         }
         if (ev.kind === "review") {
           const isGeneral = !!(ev.data && ev.data.general);
@@ -872,6 +938,9 @@
           setStage("glue", "done", isGeneral ? "generated, slots only" : "generated + linted");
           setStage("tests", "done", isGeneral ? "generated, test slot only" : "generated + linted");
           setStage("verify", "blocked", "awaiting source review");
+          setFlow("build", "done");
+          setFlow("review", "now");
+          flowStatus("Generated files are pinned. Record the tree hash before anything runs.");
           setBadge("LIVE &middot; generated + pinned &middot; nothing executed", "live");
           verdict("PINNED FOR REVIEW - nothing executed; an independent reviewer must approve these exact bytes first", "fail");
           logText(ev.text);
@@ -932,7 +1001,9 @@
         sb.id = "serve-btn"; sb.className = "ghost-btn";
         sb.textContent = "Serve the reviewed app";
         sb.onclick = () => serveGeneral(runId);
-        logEl.appendChild(sb);
+        const host = document.getElementById("now-panel");
+        if (host) host.appendChild(sb);
+        else logEl.appendChild(sb);
       }
       // Historical events remain verbatim; current state wins for badges.
       if (snap.status === "build_verified" && lastBuildGeneral) {
@@ -941,6 +1012,10 @@
         tokenMeterText("Retained run history - no new generation requested by opening it. Historical paid stages remain in the log.");
         const staleReview = document.getElementById("resume-btn");
         if (staleReview) staleReview.remove();
+      }
+      if (snap.status === "build_failed" && lastBuildGeneral) {
+        setFlow("verify", "stopped");
+        flowStatus("Contained tests failed. These bytes were not served.");
       }
       if (snap.status !== "running" && snap.status !== "resuming") {
         liveSeen = seen;
@@ -956,6 +1031,11 @@
   const REPLAY_STAGES = R.stages;
 
   async function runReplay() {
+    document.body.classList.remove("live-run");
+    $("#live-flow").classList.add("hidden");
+    $("#graph-wrap").classList.remove("collapsed");
+    const now = document.getElementById("now-panel");
+    if (now) now.textContent = "";
     setBadge("REPLAY &middot; recorded run 2026-11-04", "");
     show("#screen-build");
     buildRail(REPLAY_STAGES);
@@ -1224,6 +1304,12 @@
   updateLocalConnection();
 
   /* ---------------- wire up ---------------- */
+  const mapButton = document.getElementById("toggle-map");
+  if (mapButton) mapButton.onclick = () => {
+    const wrap = $("#graph-wrap");
+    const hidden = wrap.classList.toggle("collapsed");
+    mapButton.textContent = hidden ? "Show map" : "Hide map";
+  };
   $("#fuse-btn").onclick = () => startLive().catch(e => {
     const detail = `The request could not finish: ${e && e.message ? e.message : String(e)}. Existing run logs are preserved; no restart was requested.`;
     $("#local-run-message").textContent = detail;

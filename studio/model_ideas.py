@@ -29,6 +29,7 @@ SCHEMA = {
 TEXT_CAPS={'title':100,'what':700,'frontend':700,'backend':700,
            'integration':900,'runtime':150}
 LIST_CAPS={'dependencies':30,'external_services':12,'risks':12}
+ITEM_CAP=400
 
 
 class Refused(ValueError):
@@ -117,7 +118,7 @@ def validate(content, rows):
             if not isinstance(c[k],str) or not 1<=len(c[k])<=cap:
                 raise Refused('Idea text is empty or exceeds its field bound.')
         for k,cap in LIST_CAPS.items():
-            if not isinstance(c[k],list) or len(c[k])>cap or any(not isinstance(x,str) or not 1<=len(x)<=200 for x in c[k]):
+            if not isinstance(c[k],list) or len(c[k])>cap or any(not isinstance(x,str) or not 1<=len(x)<=ITEM_CAP for x in c[k]):
                 raise Refused('Idea list exceeds its field bound.')
         sources=c['sources']
         if not isinstance(sources,list) or len(sources)!=2:

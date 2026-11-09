@@ -22,8 +22,18 @@
 <!-- ============ SCREEN 1: SETUP ============ -->
 <section id="screen-setup" class="screen active">
   <div class="hero">
-    <h1>Fuse two repositories<br>into one app.</h1>
-    <p class="hero-sub">Paste two GitHub repos. Studio clones, pins, and checks them, then asks Meta for ideas and builds the one you pick. A failed or unknown safety check stops. Replay is the recorded notes example.</p>
+    <h1>Two repositories, one app.</h1>
+    <ol class="flow" aria-label="What happens after Suggest">
+      <li class="flow-step">1 Clone</li>
+      <li class="flow-step">2 Check</li>
+      <li class="flow-step">3 Record</li>
+      <li class="flow-step">4 Ideas</li>
+      <li class="flow-step">5 Build</li>
+      <li class="flow-step">6 Review</li>
+      <li class="flow-step">7 Verify</li>
+      <li class="flow-step">8 Serve</li>
+    </ol>
+    <p class="hero-sub">Leave the intent empty. Fail and unknown stop at Check. Replay is the recorded notes example.</p>
   </div>
   <div class="setup-card">
     <details class="local-connect-card">
@@ -53,12 +63,29 @@
     <input id="local-run-id" placeholder="run-0123456789abcdef" spellcheck="false">
     <button id="open-local-run" class="replay-btn">Open retained local run (no generation)</button>
     <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events; execution still needs all review gates.</p>
-    <p class="setup-note"><b>Suggest</b> clones, pins, and checks the two repositories. When the check is pass or warn, record the findings on the build page, record the unsent request hash, then ask Meta for ideas and build one. Fail and unknown stop, and nothing is spent. <b>Replay</b> is the recorded microdot + peewee notes example, never your inputs.</p>
+    <p class="setup-note">Suggest follows the eight steps above. Replay never uses these two repositories.</p>
   </div>
 </section>
 
 <!-- ============ SCREEN 2: BUILD ============ -->
 <section id="screen-build" class="screen">
+  <div id="live-flow" class="hidden">
+    <ol id="flow" class="flow" aria-label="This run">
+      <li id="flow-repos" class="flow-step wait"><b>1</b> Clone</li>
+      <li id="flow-check" class="flow-step wait"><b>2</b> Check</li>
+      <li id="flow-record" class="flow-step wait"><b>3</b> Record</li>
+      <li id="flow-ideas" class="flow-step wait"><b>4</b> Ideas</li>
+      <li id="flow-build" class="flow-step wait"><b>5</b> Build</li>
+      <li id="flow-review" class="flow-step wait"><b>6</b> Review</li>
+      <li id="flow-verify" class="flow-step wait"><b>7</b> Verify</li>
+      <li id="flow-serve" class="flow-step wait"><b>8</b> Serve</li>
+    </ol>
+    <div class="flow-row">
+      <p id="flow-status">Waiting to start.</p>
+      <button type="button" id="toggle-map" class="ghost-btn">Show map</button>
+    </div>
+  </div>
+  <div id="now-panel"></div>
   <div class="build-grid">
     <aside id="stage-rail"></aside>
     <main id="build-canvas">

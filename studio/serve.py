@@ -2135,7 +2135,12 @@ class Handler(BaseHTTPRequestHandler):
                 counts = len(ledger.get("count_calls", []))
             except (OSError, ValueError):
                 charged = counts = None
-            return self._json(409, {"error": "Model planning failed or output was rejected. Attempt retained, never retried; execution remains unapproved.",
+            reason = ""
+            if type(e).__name__ == "Refused":
+                text = str(e)
+                if text and "key" not in text.lower() and len(text) <= 300:
+                    reason = " " + text
+            return self._json(409, {"error": "Model planning failed or output was rejected." + reason + " Attempt retained, never retried; execution remains unapproved.",
                 "charged_reservations": charged, "count_reservations": counts,
                 "charge_disposition": "Check committed usage; a reservation is not proof of a completed charge."})
         with open(os.path.join(root, "model-ideas.json"), "w", encoding="utf-8") as f:
