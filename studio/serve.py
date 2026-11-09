@@ -76,8 +76,11 @@ MAX_RETAINED_RUNS = 10
 STATIC = {
     "/": ("text/html; charset=utf-8", "index.html"),
     "/index.html": ("text/html; charset=utf-8", "index.html"),
+    "/classic": ("text/html; charset=utf-8", "classic.html"),
+    "/classic.html": ("text/html; charset=utf-8", "classic.html"),
     "/styles.css": ("text/css; charset=utf-8", "styles.css"),
     "/app.js": ("text/javascript; charset=utf-8", "app.js"),
+    "/straight.js": ("text/javascript; charset=utf-8", "straight.js"),
     "/replay-data.js": ("text/javascript; charset=utf-8", "replay-data.js"),
     "/assets/repofuse-icon-clean.png": ("image/png",
                                         "assets/repofuse-icon-clean.png"),
