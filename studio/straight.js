@@ -109,6 +109,13 @@
     }
     if (snap.status === "stopped_safety_blocked")
       return "The check stopped this build. Nothing was sent to the model.";
+    if (snap.status === "build_failed") {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const text = events[i] && events[i].text;
+        if (text && text.indexOf("Verify did not pass") === 0) return text;
+      }
+      return "The contained tests did not pass. The app was not served.";
+    }
     return "This build stopped before an idea was sent.";
   }
 
@@ -182,7 +189,7 @@
     const verified = await waitFor(runId, (snap) => snap.status === "build_verified" || snap.status === "build_failed");
     if (verified.status !== "build_verified") {
       mark("build", "stopped");
-      throw new Error("The contained tests did not pass. The app was not served.");
+      throw new Error(failureText(verified));
     }
     const served = await post("/api/build-general/serve", {run_id: runId});
     mark("app", "done");

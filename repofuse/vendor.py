@@ -103,10 +103,18 @@ import importlib as _il
 import importlib.abc as _abc
 import importlib.machinery as _mach
 import os
+import re as _re
 import sys
 
 VENDOR = os.path.dirname(os.path.abspath(__file__))
 _SKIP = {"surfaces", "__pycache__"}
+
+
+def _pyident(slug):
+    ident = _re.sub(r"[^A-Za-z0-9]+", "_", slug or "").strip("_")
+    if not ident or ident[0].isdigit():
+        ident = "repo_" + ident
+    return ident
 
 
 class _LenientInit(_abc.Loader):
@@ -171,6 +179,22 @@ for _name in sorted(os.listdir(VENDOR)):
     except Exception:
         sys.modules.pop(_key, None)
         continue
+_pkg = sys.modules[__name__]
+for _name in sorted(os.listdir(VENDOR)):
+    _base = os.path.join(VENDOR, _name)
+    if _name in _SKIP or not os.path.isdir(_base) or _name.isidentifier():
+        continue
+    _ident = _pyident(_name)
+    _alias = __name__ + "." + _ident
+    if (not _ident.isidentifier() or hasattr(_pkg, _ident)
+            or _alias in sys.modules):
+        continue
+    try:
+        _mod = _il.import_module(__name__ + ".surfaces." + _ident)
+    except Exception:
+        continue
+    sys.modules[_alias] = _mod
+    setattr(_pkg, _ident, _mod)
 '''
 
 
