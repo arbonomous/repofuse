@@ -8,26 +8,34 @@ import ast,pathlib,re
 MAX_FILES=500;MAX_BYTES=512*1024;MAX_APIS=36
 IDENT=re.compile(r'^[A-Za-z_]\w*$')
 
-def package_api(repo_root,slug):
- root=pathlib.Path(repo_root);candidates=[root/slug,root/'src'/slug,root/'lib'/slug]
- package=next((p for p in candidates if not p.is_symlink() and (p/'__init__.py').is_file() and not (p/'__init__.py').is_symlink()),None)
- if package is None:return {'status':'not_resolved','exports':[],'note':'No matching regular Python package root found; no importability inferred from flat names.'}
- rows=[];files=sorted(package.rglob('*.py'));truncated=len(files)>MAX_FILES
- for p in files[:MAX_FILES]:
-  if p.is_symlink() or any(x.is_symlink() for x in p.parents if x!=root.parent) or p.stat().st_size>MAX_BYTES:continue
-  rel=p.relative_to(package);parts=list(rel.with_suffix('').parts)
-  if parts[-1]=='__init__':parts.pop()
-  if any(not IDENT.fullmatch(part) for part in parts):continue
-  module='.'.join([slug]+parts)
-  try:tree=ast.parse(p.read_text(encoding='utf-8'))
-  except (OSError,UnicodeError,SyntaxError):continue
-  for node in tree.body:
+def _declarations(path, root, module, rows):
+ if path.is_symlink() or path.stat().st_size>MAX_BYTES:return
+ try:tree=ast.parse(path.read_text(encoding='utf-8'))
+ except (OSError,UnicodeError,SyntaxError):return
+ for node in tree.body:
    if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and not node.name.startswith('_'):
     if isinstance(node,ast.ClassDef):
      init=next((n for n in node.body if isinstance(n,ast.FunctionDef) and n.name=='__init__'),None);args=ast.unparse(init.args)[:180] if init else 'signature not statically defined'
      kind='class'
     else:args=ast.unparse(node.args)[:180];kind='function'
-    rows.append({'module':module,'name':node.name,'kind':kind,'signature':args,'file':p.relative_to(root).as_posix()})
+    rows.append({'module':module,'name':node.name,'kind':kind,'signature':args,'file':path.relative_to(root).as_posix()})
+def package_api(repo_root,slug):
+ root=pathlib.Path(repo_root);candidates=[root/slug,root/'src'/slug,root/'lib'/slug]
+ package=next((p for p in candidates if not p.is_symlink() and (p/'__init__.py').is_file() and not (p/'__init__.py').is_symlink()),None)
+ module_file=root/(slug+'.py')
+ if package is None and (module_file.is_symlink() or not module_file.is_file()):
+  return {'status':'not_resolved','exports':[],'note':'No matching regular Python package root found; no importability inferred from flat names.'}
+ rows=[];truncated=False
+ if package is not None:
+  files=sorted(package.rglob('*.py'));truncated=len(files)>MAX_FILES
+  for p in files[:MAX_FILES]:
+   if any(x.is_symlink() for x in p.parents if x!=root.parent):continue
+   rel=p.relative_to(package);parts=list(rel.with_suffix('').parts)
+   if parts[-1]=='__init__':parts.pop()
+   if any(not IDENT.fullmatch(part) for part in parts):continue
+   _declarations(p, root, '.'.join([slug]+parts), rows)
+ else:
+  _declarations(module_file, root, slug, rows)
  # Fair deterministic sample across modules, rather than alphabetic misc names.
  groups={}
  for row in rows:groups.setdefault(row['module'],[]).append(row)

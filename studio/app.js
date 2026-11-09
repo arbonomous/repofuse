@@ -99,6 +99,20 @@
     const el = document.getElementById("flow-status");
     if (el) el.textContent = text;
   }
+  function showStartOver(detail) {
+    if (document.getElementById("start-over")) return;
+    const panel = document.createElement("section");
+    panel.id = "start-over";
+    panel.className = "local-connect-card";
+    const note = document.createElement("p");
+    note.textContent = detail || "This run is finished. Generate and Arm cannot spend it again.";
+    const button = document.createElement("button");
+    button.textContent = "Start a new run";
+    button.onclick = () => { location.href = "/"; };
+    panel.appendChild(note);
+    panel.appendChild(button);
+    placeNow(panel);
+  }
   function placeNow(panel) {
     const host = document.getElementById("now-panel");
     if (!host) { logEl.appendChild(panel); return; }
@@ -551,6 +565,8 @@
           msg.textContent = result.error || "Model planning refused.";
           setFlow("ideas", "stopped");
           flowStatus(result.error || "Idea generation was refused. This attempt is kept and is not retried.");
+          if (/already consumed|not armed/.test(result.error || ""))
+            showStartOver("This run already spent its one session. Generate cannot run again.");
           return;
         }
         msg.textContent = `Ideas from ${result.source}; usage ${result.usage.prompt_tokens} input / ${result.usage.completion_tokens} output tokens. No source execution approved.`;
@@ -867,19 +883,28 @@
         }
         if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${escapeEventText(ev.text)}`); verdict(ev.text, "fail"); }
         else if (ev.kind === "blocked") {
-          setStage("architecture", "blocked", "needs model grant");
           const pa = ev.data && ev.data.paid_attempt;
-          verdict(pa && pa.spent === true
-            ? `STOPPED - 1 paid call was made and rejected (never retried)`
-            : pa && pa.spent === null
-              ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
-              : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
+          const spentBuild = !pa && /did not complete|BudgetExceeded|glue output/.test(ev.text || "");
+          if (spentBuild) {
+            setStage("architecture", "blocked", "build stopped");
+            setFlow("build", "stopped");
+            flowStatus(ev.text);
+            verdict(ev.text, "fail");
+            showStartOver("The model returned no integration code, so this run stopped. Generate and Arm cannot spend it again.");
+          } else {
+            setStage("architecture", "blocked", "needs model grant");
+            verdict(pa && pa.spent === true
+              ? `STOPPED - 1 paid call was made and rejected (never retried)`
+              : pa && pa.spent === null
+                ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
+                : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
+            tokenMeterText(pa && pa.spent === true
+              ? "paid stages: 1 model call made - its output rejected, nothing retried"
+              : pa && pa.spent === null
+                ? "paid stages: call state UNKNOWN - check the retained record"
+                : "paid stages: disabled - 0 model calls made - 0 keys used");
+          }
           logText(ev.text);
-          tokenMeterText(pa && pa.spent === true
-            ? "paid stages: 1 model call made - its output rejected, nothing retried"
-            : pa && pa.spent === null
-              ? "paid stages: call state UNKNOWN - check the retained record"
-              : "paid stages: disabled - 0 model calls made - 0 keys used");
         }
         else {
           log(escapeEventText(ev.text).replace(/(pinned at \w+|license [A-Za-z0-9_.-]+|exports,?)/g, '<span class="hl">$1</span>'));
