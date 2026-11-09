@@ -20,7 +20,7 @@ SCHEMA = {
         'risks':{'type':'array','items':{'type':'string'}},
         'sources':{'type':'array','items':{'type':'object','properties':{
           'repo':{'type':'string'},'commit':{'type':'string'},
-          'exports':{'type':'array','items':{'type':'string'}}},
+          'exports':{'type':'array','maxItems':24,'items':{'type':'string'}}},
           'required':['repo','commit','exports'], 'additionalProperties':False}},
       }, 'required':['title','what','frontend','backend','integration','runtime',
                     'dependencies','external_services','risks','sources'],
@@ -132,7 +132,10 @@ def validate(content, rows):
                 raise Refused('Unverified repository or commit citation.')
             seen.add(repo)
             exports=source['exports']
-            if not isinstance(exports,list) or len(exports)>8 or any(not isinstance(x,str) or x not in row['exports_sample'] for x in exports):
+            sample=row['exports_sample']
+            if (not isinstance(exports,list) or not exports
+                    or len(exports)>min(24,len(sample))
+                    or any(not isinstance(x,str) or x not in sample for x in exports)):
                 raise Refused('Model cited an export absent from actual static evidence.')
         # Model statements describe a proposal. Eligibility is independently
         # computed, never trusted from a model-supplied boolean.

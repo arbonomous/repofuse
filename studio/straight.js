@@ -199,9 +199,15 @@
       mark("ideas", "now");
       say("Asking Meta for ideas.");
       await storeRecords(started.run_id);
-      const ideas = await post("/api/planning/generate", {
-        run_id: started.run_id, public_inputs: true, credit_review: true,
-      });
+      let ideas;
+      try {
+        ideas = await post("/api/planning/generate", {
+          run_id: started.run_id, public_inputs: true, credit_review: true,
+        });
+      } catch (error) {
+        mark("ideas", "stopped");
+        throw error;
+      }
       const chosen = eligible(ideas.cards);
       if (!chosen) {
         mark("ideas", "stopped");
