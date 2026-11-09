@@ -66,9 +66,56 @@ def evidence(metas):
                                                'via':str(v.get('via',''))[:150]}
                                   for k,v in list((a.get('dependencies') or {}).items())[:45]
                                   if isinstance(v,dict)}})
-    if len(json.dumps(rows))>MAX_EVIDENCE_CHARS:
-        raise Refused('Static evidence exceeds the bounded analysis request.')
-    return rows
+    return _fit_evidence(rows)
+
+
+def _fit_evidence(rows):
+    """Shrink public metadata until it fits the idea request.
+
+    The full export list stays in the run analysis. Only this copy is
+    shortened. A repository is not rejected for being large.
+    """
+    rows = json.loads(json.dumps(rows))
+
+    def size():
+        return len(json.dumps(rows))
+
+    if size() <= MAX_EVIDENCE_CHARS:
+        return rows
+    for row in rows:
+        row['readme_excerpt'] = (row.get('readme_excerpt') or '')[:400]
+        row['tree_sample'] = (row.get('tree_sample') or [])[:8]
+        coverage = row.setdefault('coverage', {})
+        coverage['trimmed'] = 'readme and file list shortened to fit the idea request'
+    if size() <= MAX_EVIDENCE_CHARS:
+        return rows
+    for keep in (24, 12, 8):
+        for row in rows:
+            evidence = row.get('python_api_evidence') or {}
+            exports = evidence.get('exports') or []
+            if isinstance(exports, list) and len(exports) > keep:
+                evidence['omitted_exports'] = len(exports) - keep
+                evidence['exports'] = exports[:keep]
+            sample = row.get('exports_sample') or []
+            if len(sample) > keep:
+                row['exports_sample'] = sample[:keep]
+            deps = row.get('declared_dependencies') or {}
+            if len(deps) > keep:
+                row['declared_dependencies'] = dict(list(deps.items())[:keep])
+            row.setdefault('coverage', {})['trimmed'] = (
+                'evidence shortened to the first matching declarations '
+                'so the idea request stays bounded')
+        if size() <= MAX_EVIDENCE_CHARS:
+            return rows
+    for row in rows:
+        evidence = row.get('python_api_evidence') or {}
+        for item in evidence.get('exports') or []:
+            if isinstance(item, dict):
+                item.pop('signature', None)
+                item.pop('file', None)
+    if size() <= MAX_EVIDENCE_CHARS:
+        return rows
+    raise Refused('Static evidence exceeds the bounded analysis request.')
 
 
 def messages(rows):

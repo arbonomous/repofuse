@@ -100,6 +100,26 @@
     }
   }
 
+  function failureText(snap) {
+    const events = snap.events || [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (["error", "safety_blocked", "planning_refused", "blocked"].includes(event.kind) && event.text)
+        return event.text;
+    }
+    if (snap.status === "stopped_safety_blocked")
+      return "The check stopped this build. Nothing was sent to the model.";
+    return "This build stopped before an idea was sent.";
+  }
+
+  function report(runId) {
+    fetch("/api/relay", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({run_id: runId}),
+    }).catch(() => {});
+  }
+
   function eligible(cards) {
     return (cards || []).find((card) => card
       && card.runtime === "python-wsgi"
@@ -185,15 +205,17 @@
     resetSteps();
     mark("clone", "now");
     say("Cloning both repositories.");
+    let started = null;
     try {
-      const started = await post("/api/fuse", {
+      started = await post("/api/fuse", {
         repo_a: $("repo-a").value, repo_b: $("repo-b").value, intent: "",
       });
       const ready = await waitFor(started.run_id, (snap) =>
         ["ideas_ready", "stopped_safety_blocked", "failed", "stopped_at_paid_boundary"].includes(snap.status));
       if (ready.status !== "ideas_ready") {
         mark("check", "stopped");
-        say("The check stopped this build. Nothing was sent to the model.");
+        say(failureText(ready));
+        report(started.run_id);
         return;
       }
       mark("ideas", "now");
@@ -206,6 +228,7 @@
         });
       } catch (error) {
         mark("ideas", "stopped");
+        report(started.run_id);
         throw error;
       }
       const chosen = eligible(ideas.cards);
@@ -223,14 +246,14 @@
         ["awaiting_review", "frontend_preflight_failed", "failed", "build_failed", "pending_repair_disclosure"].includes(snap.status));
       if (built.status !== "awaiting_review") {
         mark("build", "stopped");
-        say(built.status === "pending_repair_disclosure"
-          ? "The generated Python did not compile, and the one repair is waiting. This run cannot spend again."
-          : "The build stopped. This run cannot spend again.");
+        say(failureText(built));
+        report(started.run_id);
         return;
       }
       await finishTree(started.run_id);
     } catch (error) {
       say(error.message || "The build stopped.");
+      if (started && started.run_id) report(started.run_id);
     } finally {
       busy = false;
       $("build").disabled = false;

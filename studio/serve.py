@@ -203,6 +203,18 @@ def emit(run, stage, kind, text, data=None):
     with _lock:
         run["events"].append(ev)
         _persist_run_locked(run)
+        snap = None
+        if kind in ("error", "safety_blocked", "planning_refused", "blocked"):
+            snap = {"run_id": run.get("run_id"), "status": run.get("status"),
+                    "repo_a": run.get("repo_a"), "repo_b": run.get("repo_b"),
+                    "safety": run.get("safety"),
+                    "events": list(run.get("events") or [])[-40:]}
+    if snap is not None:
+        try:
+            from relay import record
+            record(ROOT, snap)
+        except (OSError, ValueError, TypeError):
+            pass
 
 
 def _load_pipeline():
@@ -2252,6 +2264,27 @@ class Handler(BaseHTTPRequestHandler):
                 preview["source"] = None
         return self._json(200, preview)
 
+    def _relay(self):
+        """Store this run's own error sentence. The client cannot supply it."""
+        req = self._session_body()
+        if req is None:
+            return
+        rid = req.get("run_id") or ""
+        if not RUN_ID.fullmatch(rid):
+            return self._json(400, {"error": "Invalid local run id."})
+        with _lock:
+            run = _runs.get(rid)
+            snap = None if run is None else {
+                "run_id": rid, "status": run.get("status"),
+                "repo_a": run.get("repo_a"), "repo_b": run.get("repo_b"),
+                "safety": run.get("safety"),
+                "events": list(run.get("events") or [])[-40:]}
+        if snap is None:
+            return self._json(404, {"error": "Unknown local run."})
+        from relay import record
+        path = record(ROOT, snap)
+        return self._json(200, {"recorded": bool(path)})
+
     def _operator_review(self):
         """Record a confirmation of server-derived findings or digests.
         Fail and unknown verdicts are refused. The client cannot supply
@@ -2517,6 +2550,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/operator-review":
             return self._operator_review()
+        if path == "/api/relay":
+            return self._relay()
         if path == "/api/planning/select":
             return self._planning_select()
         if path == "/api/planning/generate":
