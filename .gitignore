@@ -18,6 +18,7 @@ studio/runs/
 studio/paid-ideas/
 studio/paid-build/
 studio/safety-acks/
+studio/disclosure-acks/
 studio/build-approvals/*.json
 studio/envelope.general.json
 studio/envelope.build.json

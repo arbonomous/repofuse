@@ -1,4 +1,8 @@
-"""Allowlisted local review exchange. No credentials/provider data; unsigned records remain offline-only.
+"""Allowlisted local review exchange. No credentials or provider data.
+
+The local Studio page may record a confirmation only by echoing findings
+or digests this server just computed. Fail and unknown verdicts stay
+refused. A client-supplied file hash is never written.
 
 A review bundle contains user-selected public source bytes, not trusted
 instructions. Returned records are reviewer statements bound to hashes, not
@@ -119,8 +123,12 @@ def _atomic_json(path, data):
 
 
 def import_review(record_path, studio_root):
-    """Unsigned records: offline CLI only. Authenticated bridge may call this
-    only AFTER pinned signature, exact pending export and live binding checks.
+    """Import a bound review record.
+
+    The CLI and the local operator-review route both call this. That route
+    builds the record itself after the client echoes server-derived findings
+    or digests. An authenticated bridge may call this only AFTER a pinned
+    signature, the exact pending export, and live binding checks.
 
     Input JSON contains binding fields plus optional whole_tree.files.
     Presence of a whole_tree requires exact current executable-tree hashes.

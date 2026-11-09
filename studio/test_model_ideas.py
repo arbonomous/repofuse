@@ -16,6 +16,11 @@ def test_missing_or_wrong_commit_refuses():
   if change=='one':c['sources'].pop()
   else:c['sources'][1]['commit']='c'*40
   with pytest.raises(m.Refused):m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))
+def test_risk_sentence_over_200_chars_is_accepted():
+ c=card();c['risks']=['mypy_extensions evidence has no module path. '+('x'*160)]
+ assert 200<len(c['risks'][0])<=400
+ result=m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))
+ assert result[0]['risks']==c['risks']
 def test_schema_bounds_refuse():
  for field,value in [('title','x'*101),('dependencies',['x']*31),('runtime',''),('extra','bad')]:
   c=card();c[field]=value

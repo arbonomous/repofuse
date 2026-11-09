@@ -82,6 +82,43 @@
       : state === "running" ? "&#10227;" : state === "blocked" ? "&#10073;" : "&#9675;";
     if (meta !== undefined) el.querySelector(".stage-meta").textContent = meta;
   }
+  const FLOW_IDS = ["repos", "check", "record", "ideas", "build", "review", "verify", "serve"];
+  function setFlow(id, state) {
+    const el = document.getElementById("flow-" + id);
+    if (!el) return;
+    el.classList.remove("wait", "now", "done", "stopped");
+    el.classList.add(state);
+  }
+  function resetFlow() {
+    FLOW_IDS.forEach(id => setFlow(id, "wait"));
+    const panel = document.getElementById("now-panel");
+    if (panel) panel.textContent = "";
+    flowStatus("Cloning and pinning both repositories.");
+  }
+  function flowStatus(text) {
+    const el = document.getElementById("flow-status");
+    if (el) el.textContent = text;
+  }
+  function showStartOver(detail) {
+    if (document.getElementById("start-over")) return;
+    const panel = document.createElement("section");
+    panel.id = "start-over";
+    panel.className = "local-connect-card";
+    const note = document.createElement("p");
+    note.textContent = detail || "This run is finished. Generate and Arm cannot spend it again.";
+    const button = document.createElement("button");
+    button.textContent = "Start a new run";
+    button.onclick = () => { location.href = "/"; };
+    panel.appendChild(note);
+    panel.appendChild(button);
+    placeNow(panel);
+  }
+  function placeNow(panel) {
+    const host = document.getElementById("now-panel");
+    if (!host) { logEl.appendChild(panel); return; }
+    host.textContent = "";
+    host.appendChild(panel);
+  }
 
   /* ---------------- log ---------------- */
   const logEl = $("#build-log");
@@ -342,17 +379,133 @@
     section.appendChild(button); section.appendChild(message); parent.appendChild(section);
   }
 
-  function showModelPlanning(runId, coverage) {
+  let pendingCoverage = null;
+
+  async function showBuildGate(runId) {
+    const old = document.getElementById("build-gate");
+    if (old) old.remove();
+    const panel = document.createElement("section");
+    panel.id = "build-gate"; panel.className = "local-connect-card";
+    const title = document.createElement("h3");
+    title.textContent = "Safety findings for this pair";
+    panel.appendChild(title);
+    const msg = document.createElement("p");
+    panel.appendChild(msg);
+    placeNow(panel);
+    let preview;
+    try {
+      const response = await fetch("/api/operator-review/" + runId);
+      preview = await response.json();
+      if (!response.ok) { msg.textContent = preview.error || "Findings unavailable."; return; }
+    } catch (_) { msg.textContent = "Findings unavailable."; return; }
+    const list = document.createElement("ul");
+    for (const line of preview.findings || []) {
+      const item = document.createElement("li");
+      item.textContent = line;
+      list.appendChild(item);
+    }
+    panel.appendChild(list);
+    if (!preview.recordable) {
+      msg.textContent = "A failed or unknown check stops this build. Recording these lines would not let it continue.";
+      const planning = document.getElementById("model-planning-controls");
+      if (planning) planning.remove();
+      return;
+    }
+    if (preview.input_ready) {
+      msg.textContent = preview.input_detail || "Findings already recorded for this run.";
+      showModelPlanning(runId, pendingCoverage, preview);
+      return;
+    }
+    msg.textContent = "Read every line. Recording them lets a warn continue to idea generation. It does not approve running generated code.";
+    const name = document.createElement("input");
+    name.placeholder = "Your name";
+    name.maxLength = 120;
+    panel.appendChild(name);
+    const button = document.createElement("button");
+    button.textContent = "Record that I read these findings";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({run_id: runId, stage: "input", reviewer: name.value, findings: preview.findings})});
+        const data = await r.json();
+        msg.textContent = data.error || "Findings recorded. Idea generation can continue. Generated code still cannot run.";
+        if (r.ok) showModelPlanning(runId, pendingCoverage, preview);
+        else button.disabled = false;
+      } catch (_) { msg.textContent = "Findings were not recorded."; button.disabled = false; }
+    };
+    panel.appendChild(button);
+  }
+
+  async function showSourceGate(runId) {
+    const old = document.getElementById("source-gate");
+    if (old) old.remove();
+    let preview;
+    try {
+      const response = await fetch("/api/operator-review/" + runId);
+      preview = await response.json();
+      if (!response.ok || !preview.source) return;
+    } catch (_) { return; }
+    const panel = document.createElement("section");
+    panel.id = "source-gate"; panel.className = "local-connect-card";
+    const title = document.createElement("h3");
+    title.textContent = "Generated source for this build";
+    panel.appendChild(title);
+    const hash = document.createElement("p");
+    hash.textContent = "Current tree hash: " + preview.source.tree_sha256
+      + " (" + preview.source.file_count + " files, including vendored bytes).";
+    panel.appendChild(hash);
+    const generated = preview.source.generated || {};
+    for (const name of Object.keys(generated)) {
+      const heading = document.createElement("h4");
+      heading.textContent = name;
+      const pre = document.createElement("pre");
+      pre.textContent = generated[name];
+      panel.appendChild(heading);
+      panel.appendChild(pre);
+    }
+    const msg = document.createElement("p");
+    msg.textContent = "Recording this hash permits contained tests and serving only while these bytes still match. It does not approve a failed or unknown safety check.";
+    panel.appendChild(msg);
+    const name = document.createElement("input");
+    name.placeholder = "Your name";
+    name.maxLength = 120;
+    panel.appendChild(name);
+    const button = document.createElement("button");
+    button.textContent = "Record that I read this generated tree";
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({run_id: runId, stage: "source", reviewer: name.value, tree_sha256: preview.source.tree_sha256})});
+        const data = await r.json();
+        msg.textContent = data.error || "Source review recorded. Verify runs the contained tests. It does not generate again.";
+        if (r.ok) {
+          setFlow("review", "done");
+          setFlow("verify", "now");
+          flowStatus("Tree recorded. Verify runs the contained tests.");
+        }
+        if (!r.ok) button.disabled = false;
+      } catch (_) { msg.textContent = "Source review was not recorded."; button.disabled = false; }
+    };
+    panel.appendChild(button);
+    placeNow(panel);
+    setFlow("build", "done");
+    setFlow("review", "now");
+    flowStatus("Read the generated files and record this tree hash. Nothing has run yet.");
+  }
+
+  function showModelPlanning(runId, coverage, preview) {
     if (document.getElementById("model-planning-controls")) return;
     const panel = document.createElement("section");
     panel.id = "model-planning-controls"; panel.className = "local-connect-card";
-    const h = document.createElement("h3"); h.textContent = "Ask Meta for full-stack ideas"; panel.appendChild(h);
+    const h = document.createElement("h3"); h.textContent = "Ask Meta for ideas, then build one"; panel.appendChild(h);
     const note = document.createElement("p");
-    note.textContent = "Models can propose integrations from bounded public evidence without running repository code. This does not clear unresolved dependency, runtime or execution checks. A model proposal is not a working app.";
+    note.textContent = "This sends the reviewed public evidence to Meta and uses one model call plus one count check. The cards that come back can be built in the same run. A card is not a finished app until the later stages and the contained tests pass.";
     panel.appendChild(note);
     for (const item of (coverage || [])) {
       const p = document.createElement("p");
-      p.textContent = `Evidence: ${item.exports_included}/${item.exports_total} exports; ${item.dependencies_included}/${item.dependencies_total} dependencies; README up to ${item.readme_excerpt_limit} characters. ${item.excluded}`;
+      p.textContent = `Evidence: ${item.exports_included}/${item.exports_total} exports; ${item.dependencies_included}/${item.dependencies_total} dependencies.`;
       panel.appendChild(p);
     }
     const download = document.createElement("a");
@@ -365,21 +518,70 @@
     const creditLabel = document.createElement("label"), creditCheck = document.createElement("input");
     creditCheck.type = "checkbox"; creditLabel.appendChild(creditCheck);
     creditLabel.appendChild(document.createTextNode(" Current credits and account terms checked. Local token/call limits are not a dollar/card-charge cap.")); panel.appendChild(creditLabel);
+    const disclosure = preview && preview.disclosure;
+    let disclosureReady = !!(preview && preview.disclosure_ready);
+    const dmsg = document.createElement("p");
+    if (disclosure && disclosure.payload_sha256) {
+      const hash = document.createElement("p");
+      hash.textContent = "Unsent request hash: " + disclosure.payload_sha256
+        + " (" + String(disclosure.payload_bytes) + " bytes).";
+      panel.appendChild(hash);
+      if (disclosureReady) dmsg.textContent = "This unsent request is already recorded.";
+      else {
+        const dname = document.createElement("input");
+        dname.placeholder = "Your name";
+        dname.maxLength = 120;
+        panel.appendChild(dname);
+        const dbutton = document.createElement("button");
+        dbutton.textContent = "Record that I read this unsent request";
+        dbutton.onclick = async () => {
+          dbutton.disabled = true;
+          try {
+            const r = await fetch("/api/operator-review", {method:"POST", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify({run_id: runId, stage: "disclosure", reviewer: dname.value, payload_sha256: disclosure.payload_sha256})});
+            const data = await r.json();
+            disclosureReady = r.ok;
+            dmsg.textContent = data.error || "Request review recorded. Generating ideas sends this metadata to Meta.";
+            if (!r.ok) dbutton.disabled = false;
+          } catch (_) { dmsg.textContent = "Request review was not recorded."; dbutton.disabled = false; }
+        };
+        panel.appendChild(dbutton);
+      }
+    }
+    panel.appendChild(dmsg);
     const msg = document.createElement("p"); panel.appendChild(msg);
     const button = document.createElement("button"); button.textContent = "Generate model ideas (1 model + 1 count request)";
     button.onclick = async () => {
+      if (disclosure && disclosure.payload_sha256 && !disclosureReady) {
+        msg.textContent = "Record the unsent request hash before generating ideas.";
+        return;
+      }
       button.disabled = true;
       try {
         const r = await fetch("/api/planning/generate", {method:"POST", headers:{"Content-Type":"application/json"},
           body:JSON.stringify({run_id:runId,public_inputs:publicCheck.checked,credit_review:creditCheck.checked})});
         const result = await r.json();
-        if (!r.ok || result.error) {msg.textContent = result.error || "Model planning refused."; return;}
+        if (!r.ok || result.error) {
+          msg.textContent = result.error || "Model planning refused.";
+          setFlow("ideas", "stopped");
+          flowStatus(result.error || "Idea generation was refused. This attempt is kept and is not retried.");
+          if (/already consumed|not armed/.test(result.error || ""))
+            showStartOver("This run already spent its one session. Generate cannot run again.");
+          return;
+        }
         msg.textContent = `Ideas from ${result.source}; usage ${result.usage.prompt_tokens} input / ${result.usage.completion_tokens} output tokens. No source execution approved.`;
+        setFlow("ideas", "done");
+        flowStatus("Pick one idea below. The same run builds it.");
         renderFullstackModelIdeas(runId, result);
       } catch (e) {msg.textContent = "Planning response unavailable. Check retained attempt before any retry: " + String(e);}
       finally {button.disabled = false;}
     };
-    panel.appendChild(button); addWorkflowStatus(panel, runId); logEl.appendChild(panel);
+    panel.appendChild(button); addWorkflowStatus(panel, runId); placeNow(panel);
+    setFlow("record", "done");
+    setFlow("ideas", "now");
+    flowStatus(preview && preview.disclosure_ready
+      ? "Request already recorded. Check both boxes, then generate ideas."
+      : "Record the unsent request hash, check both boxes, then generate ideas.");
   }
 
   function renderFullstackModelIdeas(runId, result) {
@@ -403,6 +605,9 @@
         const data = await r.json(); note.textContent = data.error || data.message || "Selection could not be checked.";
         if (r.ok && data.status === "running") {
           lastBuildGeneral = true;
+          setFlow("ideas", "done");
+          setFlow("build", "now");
+          flowStatus("Building the idea you picked in this same run.");
           pollLive(runId, liveSeen);
         }
       };
@@ -518,6 +723,8 @@
       body: JSON.stringify({ run_id: runId }),
     }).then(r => r.json()).then(resp => {
       if (resp.error) { verdict(`serving refused honestly: ${resp.error}`, "fail"); return; }
+      setFlow("serve", "done");
+      flowStatus("Served at " + resp.url);
       const line = document.createElement("div");
       line.className = "log-line";
       line.appendChild(document.createTextNode(
@@ -570,6 +777,11 @@
       return;
     }
     lastRunId = resp.run_id; lastBuildGeneral = false; liveSeen = 0;
+    document.body.classList.add("live-run");
+    $("#live-flow").classList.remove("hidden");
+    $("#graph-wrap").classList.add("collapsed");
+    resetFlow();
+    setFlow("repos", "now");
     setBadge("LIVE &middot; free stages &middot; 0 model calls", "live");
     show("#screen-build");
     buildRail([
@@ -615,7 +827,7 @@
         const ev = snap.events[seen];
         if (ev.kind === "metadata_ready" && ev.stage === "planning") {
           logText(ev.text);
-          showModelPlanning(runId, ev.data && ev.data.coverage);
+          pendingCoverage = ev.data && ev.data.coverage;
           continue;
         }
         if (ev.kind === "model_ideas" && ev.data) {
@@ -647,14 +859,23 @@
             verdict("STOPPED BY SAFETY CHECKS - a required check failed "
                     + "or is unknown; nothing spent, nothing executed",
                     "fail");
+            setFlow("repos", "done");
+            setFlow("check", "stopped");
+            flowStatus("Stopped. A failed or unknown check cannot continue, and nothing was spent.");
+            showBuildGate(runId);
             continue;
           }
           if (ev.kind === "stage_done") {
             const meta = snap.safety && snap.safety.status === "warn"
-              ? "warn - review needed before spend/execute" : "qualified";
+              ? "warn - record the findings below to continue" : "qualified";
             setStage("safety", "done", meta);
             setStage("vendor", "running");
             logText(ev.text);
+            setFlow("repos", "done");
+            setFlow("check", "done");
+            setFlow("record", "now");
+            flowStatus("Read every safety line, then record them. Recording does not approve running code.");
+            showBuildGate(runId);
             continue;
           }
           logText(ev.text);
@@ -662,19 +883,28 @@
         }
         if (ev.kind === "error") { log(`<span class="bad">&#10007;</span> ${escapeEventText(ev.text)}`); verdict(ev.text, "fail"); }
         else if (ev.kind === "blocked") {
-          setStage("architecture", "blocked", "needs model grant");
           const pa = ev.data && ev.data.paid_attempt;
-          verdict(pa && pa.spent === true
-            ? `STOPPED - 1 paid call was made and rejected (never retried)`
-            : pa && pa.spent === null
-              ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
-              : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
+          const spentBuild = !pa && /did not complete|BudgetExceeded|glue output/.test(ev.text || "");
+          if (spentBuild) {
+            setStage("architecture", "blocked", "build stopped");
+            setFlow("build", "stopped");
+            flowStatus(ev.text);
+            verdict(ev.text, "fail");
+            showStartOver("The model returned no integration code, so this run stopped. Generate and Arm cannot spend it again.");
+          } else {
+            setStage("architecture", "blocked", "needs model grant");
+            verdict(pa && pa.spent === true
+              ? `STOPPED - 1 paid call was made and rejected (never retried)`
+              : pa && pa.spent === null
+                ? `STOPPED - paid call state UNKNOWN - check the retained record before any retry`
+                : `STOPPED AT THE PAID BOUNDARY - no model call made`, "fail");
+            tokenMeterText(pa && pa.spent === true
+              ? "paid stages: 1 model call made - its output rejected, nothing retried"
+              : pa && pa.spent === null
+                ? "paid stages: call state UNKNOWN - check the retained record"
+                : "paid stages: disabled - 0 model calls made - 0 keys used");
+          }
           logText(ev.text);
-          tokenMeterText(pa && pa.spent === true
-            ? "paid stages: 1 model call made - its output rejected, nothing retried"
-            : pa && pa.spent === null
-              ? "paid stages: call state UNKNOWN - check the retained record"
-              : "paid stages: disabled - 0 model calls made - 0 keys used");
         }
         else {
           log(escapeEventText(ev.text).replace(/(pinned at \w+|license [A-Za-z0-9_.-]+|exports,?)/g, '<span class="hl">$1</span>'));
@@ -697,6 +927,9 @@
         if (ev.kind === "stage_done" && ev.stage === "ingest") {
           setStage("ingest", "done", "cloned + pinned");
           setStage("analyze", "running");
+          setFlow("repos", "done");
+          setFlow("check", "now");
+          flowStatus("Both repositories are pinned. The safety check is running.");
         }
         if (ev.kind === "stage_done" && ev.stage === "analyze") {
           setStage("analyze", "done", "exports mapped");
@@ -718,7 +951,10 @@
         if (ev.kind === "stage_done" && ev.stage === "verify" && lastBuildGeneral
             && ev.text && ev.text.indexOf("PASSED") !== -1) {
           setStage("verify", "done", "sandbox verify passed");
-
+          setFlow("review", "done");
+          setFlow("verify", "done");
+          setFlow("serve", "now");
+          flowStatus("Contained tests passed. Serve opens the app on this machine.");
         }
         if (ev.kind === "review") {
           const isGeneral = !!(ev.data && ev.data.general);
@@ -727,6 +963,9 @@
           setStage("glue", "done", isGeneral ? "generated, slots only" : "generated + linted");
           setStage("tests", "done", isGeneral ? "generated, test slot only" : "generated + linted");
           setStage("verify", "blocked", "awaiting source review");
+          setFlow("build", "done");
+          setFlow("review", "now");
+          flowStatus("Generated files are pinned. Record the tree hash before anything runs.");
           setBadge("LIVE &middot; generated + pinned &middot; nothing executed", "live");
           verdict("PINNED FOR REVIEW - nothing executed; an independent reviewer must approve these exact bytes first", "fail");
           logText(ev.text);
@@ -787,7 +1026,9 @@
         sb.id = "serve-btn"; sb.className = "ghost-btn";
         sb.textContent = "Serve the reviewed app";
         sb.onclick = () => serveGeneral(runId);
-        logEl.appendChild(sb);
+        const host = document.getElementById("now-panel");
+        if (host) host.appendChild(sb);
+        else logEl.appendChild(sb);
       }
       // Historical events remain verbatim; current state wins for badges.
       if (snap.status === "build_verified" && lastBuildGeneral) {
@@ -797,7 +1038,16 @@
         const staleReview = document.getElementById("resume-btn");
         if (staleReview) staleReview.remove();
       }
-      if (snap.status !== "running" && snap.status !== "resuming") { liveSeen = seen; break; }
+      if (snap.status === "build_failed" && lastBuildGeneral) {
+        setFlow("verify", "stopped");
+        flowStatus("Contained tests failed. These bytes were not served.");
+      }
+      if (snap.status !== "running" && snap.status !== "resuming") {
+        liveSeen = seen;
+        if (lastBuildGeneral && ["awaiting_review", "frontend_preflight_failed", "build_failed"].includes(snap.status))
+          showSourceGate(runId);
+        break;
+      }
       await new Promise(r => setTimeout(r, 500));
     }
   }
@@ -806,6 +1056,11 @@
   const REPLAY_STAGES = R.stages;
 
   async function runReplay() {
+    document.body.classList.remove("live-run");
+    $("#live-flow").classList.add("hidden");
+    $("#graph-wrap").classList.remove("collapsed");
+    const now = document.getElementById("now-panel");
+    if (now) now.textContent = "";
     setBadge("REPLAY &middot; recorded run 2026-11-04", "");
     show("#screen-build");
     buildRail(REPLAY_STAGES);
@@ -1074,6 +1329,12 @@
   updateLocalConnection();
 
   /* ---------------- wire up ---------------- */
+  const mapButton = document.getElementById("toggle-map");
+  if (mapButton) mapButton.onclick = () => {
+    const wrap = $("#graph-wrap");
+    const hidden = wrap.classList.toggle("collapsed");
+    mapButton.textContent = hidden ? "Show map" : "Hide map";
+  };
   $("#fuse-btn").onclick = () => startLive().catch(e => {
     const detail = `The request could not finish: ${e && e.message ? e.message : String(e)}. Existing run logs are preserved; no restart was requested.`;
     $("#local-run-message").textContent = detail;
@@ -1095,8 +1356,11 @@
     replayBtn.title = ok ? "" : "Replay exists only for the recorded microdot + peewee notes build";
     $("#replay-hint").textContent = ok
       ? "Repos match the RECORDED NOTES API build (microdot + peewee, 2026-11-04) - replay that recorded run's full paid pipeline."
-      : "Replay exists only for the RECORDED NOTES API build (pinned microdot + peewee, 2026-11-04). Your inputs run the real free stages instead.";
+      : ($("#intent").value.trim()
+        ? "A written intent stops before paid generation. Leave it blank to get ideas and build one."
+        : "Leave the intent blank. After the safety check, record the findings on the build page, then ask Meta for ideas and build one.");
   }));
+  $("#repo-a").dispatchEvent(new Event("input"));
   replayBtn.disabled = false; // default inputs match
 
   // Recover a retained general run from the local server. This reads

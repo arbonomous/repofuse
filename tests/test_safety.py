@@ -172,6 +172,18 @@ class TestOsvAdvisory(unittest.TestCase):
                              ["ecosystem", "name"])
         self.assertIn("transitive", r["scope"])  # scope stated explicitly
 
+    def test_development_extra_does_not_make_runtime_unknown(self):
+        deps = {"pytest": {"spec": ">=6", "via": "pyproject.toml",
+                           "dev": True}}
+        r = safety.osv_check(deps, repo_commit=self.COMMIT,
+                             allow_network=True,
+                             opener=lambda req, timeout=None: self._resp(
+                                 {"results": [{}]}))
+        self.assertEqual(r["status"], safety.Verdict.WARN)
+        self.assertEqual(r["queries_made"], 1)
+        self.assertEqual(r["development_unresolved"][0]["name"], "pytest")
+        self.assertEqual(r["unresolved"], [])
+
     def test_unpinned_dep_makes_status_unknown(self):
         r = safety.osv_check(self.DEPS, repo_commit=self.COMMIT,
                              allow_network=True,

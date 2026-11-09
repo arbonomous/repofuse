@@ -49,3 +49,63 @@ def test_armed_build_consumed_before_thread(http,monkeypatch):
 
 def test_no_http_approval_import_route(http):
  post,run,fr=http;assert post('/api/review-import',{})[0]==404
+
+def test_operator_review_records_echoed_findings_and_refuses_fail(http,tmp_path,monkeypatch):
+ post,run,fr=http
+ root=tmp_path/'studio';(root/'runs').mkdir(parents=True)
+ monkeypatch.setattr(s,'ROOT',str(root));monkeypatch.setattr(s,'RUNS',str(root/'runs'));monkeypatch.setattr(s,'ACKS',str(root/'safety-acks'))
+ run['safety']={'status':'fail','repos':[{'repo':'a','commit':'a'*40,'status':'fail','blocking':True,'static':{'findings':[{'file':'x.py','rule':'dynamic-exec','detail':'exec'}]},'dependencies':{'status':'fail','note':'vuln'}}]}
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'input','reviewer':'Ada','findings':['a|x.py|dynamic-exec|exec']})
+ assert status==403 and 'fail' in body['error']
+ assert not (root/'safety-acks').exists()
+ run['safety']={'status':'warn','repos':[{'repo':'a','commit':'a'*40,'status':'warn','blocking':False,'static':{'findings':[{'file':'x.py','rule':'dynamic-exec','detail':'exec'}]},'dependencies':{'status':'warn','note':'empty'}}]}
+ (root/'runs'/(RID+'-state.json')).write_text(json.dumps(run))
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'input','reviewer':'Ada','findings':['forged']})
+ assert status==403 and not (root/'safety-acks').exists()
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'input','reviewer':'A','findings':['a|advisory|warn|empty','a|x.py|dynamic-exec|exec']})
+ assert status==403
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'input','reviewer':'Ada','findings':['a|advisory|warn|empty','a|x.py|dynamic-exec|exec']})
+ assert status==200 and body['safety_record_imported'] is True and body['whole_tree_imported'] is False
+ ack=json.loads((root/'safety-acks'/(RID+'.json')).read_text())
+ assert ack['reviewer']=='Ada' and ack['run_id']==RID
+ ok,why=s.spend_safety_gate(run);assert ok,why
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'input','reviewer':'Ada','findings':['a|advisory|warn|empty','a|x.py|dynamic-exec|exec']},origin='https://attacker.invalid')
+ assert status==403
+
+def test_operator_review_source_uses_server_hashes(http,tmp_path,monkeypatch):
+ import hashlib
+ from repofuse import gluereview
+ import operator_review
+ post,run,fr=http
+ root=tmp_path/'studio';app=root/'runs'/(RID+'-fusion')/'fused_app'
+ (app/'generated').mkdir(parents=True)
+ (app/'generated'/'integration.py').write_text('def compute(payload):\n    return {}\n')
+ (app/'test_fused.py').write_text('def test_ok():\n    assert True\n')
+ (app/'serving.json').write_text('{}\n')
+ monkeypatch.setattr(s,'ROOT',str(root));monkeypatch.setattr(s,'RUNS',str(root/'runs'));monkeypatch.setattr(s,'ACKS',str(root/'safety-acks'));monkeypatch.setattr(s,'APPROVALS',str(root/'build-approvals'))
+ run['status']='awaiting_review'
+ run['safety']={'status':'warn','repos':[{'repo':'a','commit':'a'*40,'status':'warn','blocking':False,'static':{'findings':[]},'dependencies':{'status':'warn','note':'empty'}}]}
+ (root/'runs'/(RID+'-state.json')).write_text(json.dumps(run))
+ files={rel:gluereview._sha256(str(app/rel)) for rel in gluereview.review_targets(str(app))}
+ digest=operator_review.tree_digest(files)
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'source','reviewer':'Ada','tree_sha256':'0'*64,'files':{'generated/integration.py':'deadbeef'}})
+ assert status==403 and not (root/'build-approvals').exists()
+ status,body=post('/api/operator-review',{'run_id':RID,'stage':'source','reviewer':'Ada','tree_sha256':digest,'files':{'generated/integration.py':'deadbeef'}})
+ assert status==200 and body['whole_tree_imported'] is True
+ written=json.loads((root/'build-approvals'/(RID+'-general.json')).read_text())
+ assert written['files']==files and written['files']['generated/integration.py']==hashlib.sha256((app/'generated'/'integration.py').read_bytes()).hexdigest()
+
+def test_planning_generate_checks_safety_before_arm(http,tmp_path,monkeypatch):
+ import disclosure
+ post,run,fr=http
+ post('/api/local-session/connect',{'key':'fixture-local-key-not-real'})
+ root=tmp_path/'studio';(root/'disclosure-acks').mkdir(parents=True)
+ (root/'disclosure-acks'/(RID+'.json')).write_text('{}')
+ monkeypatch.setattr(s,'ROOT',str(root))
+ monkeypatch.setattr(s.Handler,'_planning_prepare',lambda self,rid:(str(root),[],({},{},{},{},{})))
+ monkeypatch.setattr(disclosure,'check_review',lambda *a,**k:True)
+ run['safety']['status']='fail'
+ status,body=post('/api/planning/generate',{'run_id':RID,'public_inputs':True,'credit_review':True})
+ assert status==403 and 'safety gate' in body['error']
+ assert s._local_session.status()['armed_run'] is None
+ assert not (root/'session-envelope.json').exists() and not (fr/'session-envelope.json').exists()

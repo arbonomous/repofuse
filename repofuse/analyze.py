@@ -110,12 +110,18 @@ def _add_dep(deps, raw, via):
     spec = (m.group(3) or "").strip()
     if spec and not _DEP_SPEC.match(spec):
         return False
-    deps.setdefault(m.group(1).lower(),
-                    {"spec": spec or "*", "via": via})
-    return True
+    name = m.group(1).lower()
+    created = name not in deps
+    deps.setdefault(name, {"spec": spec or "*", "via": via})
+    return name, created
 
 
 def _pyproject_dependencies(text):
+    """Dependency requirement strings, including optional extras."""
+    return [spec for spec, _dev in _pyproject_roles(text)]
+
+
+def _pyproject_roles(text):
     """Section-scoped extraction: only the [project] dependencies array
     and [project.optional-dependencies] values count. Tool sections
     ([tool.pytest.ini_options] addopts etc.) are NOT dependencies -
@@ -124,6 +130,7 @@ def _pyproject_dependencies(text):
     section = None
     collecting = False
     optional = False
+    role = False
     buf = ""
     out = []
 
@@ -132,7 +139,7 @@ def _pyproject_dependencies(text):
         if "]" in buf:
             array = buf[:buf.index("]")]
             for m in re.finditer(r"['\"]([^'\"]+)['\"]", array):
-                out.append(m.group(1))
+                out.append((m.group(1), role))
         buf = ""
         collecting = False
 
@@ -157,16 +164,37 @@ def _pyproject_dependencies(text):
             continue
         if section == "project" and re.match(r"^dependencies\s*=", stripped):
             buf = stripped.split("=", 1)[1]
+            role = False
             collecting = True
             if "]" in buf:
                 flush()
         elif optional and re.match(r"^[A-Za-z_.-]+\s*=", stripped):
             buf = stripped.split("=", 1)[1]
+            role = True
             collecting = True
             if "]" in buf:
                 flush()
     flush()
     return out
+
+
+def _mark_dev(deps, recorded, dev):
+    if not recorded:
+        return
+    name, created = recorded
+    if created and dev:
+        deps[name]["dev"] = True
+    elif not created and not dev:
+        deps[name].pop("dev", None)
+
+
+def _development_manifest(rel):
+    """Requirements that install a library's tests or docs, not its runtime."""
+    parts = rel.replace("\\", "/").split("/")
+    return parts[0] in {
+        "tests", "test", "testing", "docs", "doc", "ci",
+        "benchmark", "benchmarks", "examples",
+    }
 
 
 def read_dependencies(path, manifests):
@@ -182,12 +210,13 @@ def read_dependencies(path, manifests):
                             deps[name] = {"spec": ver, "via": rel,
                                           "dev": sec == "devDependencies"}
             elif rel.endswith("requirements.txt"):
+                dev = _development_manifest(rel)
                 for line in open(full, encoding="utf-8", errors="replace"):
-                    _add_dep(deps, line, rel)
+                    _mark_dev(deps, _add_dep(deps, line, rel), dev)
             elif rel.endswith("pyproject.toml"):
                 text = open(full, encoding="utf-8", errors="replace").read()
-                for dep in _pyproject_dependencies(text):
-                    _add_dep(deps, dep, rel)
+                for dep, dev in _pyproject_roles(text):
+                    _mark_dev(deps, _add_dep(deps, dep, rel), dev)
         except (OSError, ValueError):
             continue
     return deps

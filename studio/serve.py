@@ -396,7 +396,9 @@ GENERAL_ENVELOPE = os.path.join(ROOT, "envelope.general.json")
 
 def _general_attestation_path(run_id):
     """Reviewer-only location for the general run's whole-tree byte
-    attestation: APPROVALS is never writable via any HTTP route."""
+    attestation. The local operator-review route writes this file only
+    through import_review, and only after the client echoes the digest of
+    hashes the server just computed. The client cannot supply those hashes."""
     return os.path.join(APPROVALS, f"{run_id}-general.json")
 
 
@@ -1327,7 +1329,9 @@ def spend_safety_gate(run):
             return False, ("safety verdict is warn: this build is paused "
                            "until an independent reviewer signs off in "
                            "writing for this exact run and its pinned "
-                           "commits; the browser cannot grant that sign-off")
+                           "commits. Record the finding lines shown on this "
+                           "local page; a failed or unknown check cannot "
+                           "be recorded")
         return False, ("run state was rehydrated from disk, so its safety "
                        "verdict is only as trustworthy as that file: an "
                        "independent bound acknowledgment is required for "
@@ -2093,6 +2097,13 @@ class Handler(BaseHTTPRequestHandler):
             check_review(ack, prepared[-1])
         except (ValueError, OSError, TypeError):
             return self._json(403, {"error": "Exact public-metadata disclosure review is required. Download the request package; no model call made."})
+        with _lock:
+            run = _runs.get(rid)
+        if run is None:
+            return self._json(404, {"error": "Unknown local run; no model call made."})
+        gate_ok, gate_why = spend_safety_gate(dict(run, run_id=rid))
+        if not gate_ok:
+            return self._json(403, {"error": "safety gate refused idea generation BEFORE any count or provider call: " + gate_why})
         try:
             _local_session.arm(rid,
                 confirmed_public_inputs=req.get("public_inputs"),
@@ -2124,7 +2135,12 @@ class Handler(BaseHTTPRequestHandler):
                 counts = len(ledger.get("count_calls", []))
             except (OSError, ValueError):
                 charged = counts = None
-            return self._json(409, {"error": "Model planning failed or output was rejected. Attempt retained, never retried; execution remains unapproved.",
+            reason = ""
+            if type(e).__name__ == "Refused":
+                text = str(e)
+                if text and "key" not in text.lower() and len(text) <= 300:
+                    reason = " " + text
+            return self._json(409, {"error": "Model planning failed or output was rejected." + reason + " Attempt retained, never retried; execution remains unapproved.",
                 "charged_reservations": charged, "count_reservations": counts,
                 "charge_disposition": "Check committed usage; a reservation is not proof of a completed charge."})
         with open(os.path.join(root, "model-ideas.json"), "w", encoding="utf-8") as f:
@@ -2135,6 +2151,109 @@ class Handler(BaseHTTPRequestHandler):
         with _lock:
             run["status"] = "ideas_ready"
             _persist_run_locked(run)
+        return self._json(200, result)
+
+    def _operator_review_preview(self, rid):
+        """Show the exact lines and digests an operator can confirm.
+        This response grants nothing."""
+        if not RUN_ID.fullmatch(rid):
+            return self._json(400, {"error": "Invalid local run id."})
+        with _lock:
+            run = _runs.get(rid)
+            snap = None if run is None else json.loads(json.dumps(run))
+        if snap is None:
+            return self._json(404, {"error": "Unknown local run."})
+        from operator_review import (finding_lines, generated_preview,
+                                     tree_digest, Refused)
+        from repofuse import gluereview
+        verdict = snap.get("safety") or {}
+        try:
+            lines = finding_lines(verdict)
+        except (Refused, TypeError, ValueError):
+            lines = []
+        gate_ok, gate_why = spend_safety_gate(dict(snap, run_id=rid))
+        preview = {
+            "run_id": rid,
+            "status": snap.get("status"),
+            "safety_status": verdict.get("status"),
+            "input_ready": gate_ok,
+            "input_detail": gate_why,
+            "findings": lines,
+            "recordable": verdict.get("status") in ("pass", "warn")
+            and not any((repo.get("status") in ("fail", "unknown")
+                         or repo.get("blocking"))
+                        for repo in (verdict.get("repos") or [])),
+        }
+        try:
+            _root, _metas, prepared = self._planning_prepare(rid)
+            bound = prepared[-1]
+            preview["disclosure"] = {
+                "payload_sha256": bound.get("payload_sha256"),
+                "payload_bytes": bound.get("payload_bytes"),
+                "commits": bound.get("commits"),
+                "model": "muse-spark-1.3",
+            }
+            preview["disclosure_ready"] = False
+            ack_path = os.path.join(ROOT, "disclosure-acks", rid + ".json")
+            try:
+                with open(ack_path, encoding="utf-8") as handle:
+                    recorded = json.load(handle)
+                from disclosure import check_review
+                check_review(recorded, bound)
+                preview["disclosure_ready"] = True
+            except (OSError, ValueError, TypeError, KeyError):
+                preview["disclosure_ready"] = False
+        except (ValueError, OSError, TypeError, KeyError):
+            preview["disclosure"] = None
+            preview["disclosure_ready"] = False
+        app = os.path.join(RUNS, rid + "-fusion", "fused_app")
+        if os.path.isdir(app) and snap.get("status") in (
+                "awaiting_review", "frontend_preflight_failed", "build_failed",
+                "build_verified"):
+            try:
+                targets = gluereview.review_targets(app)
+                files = {rel: gluereview._sha256(os.path.join(app, rel))
+                         for rel in targets}
+                preview["source"] = {
+                    "tree_sha256": tree_digest(files),
+                    "file_count": len(files),
+                    "generated": generated_preview(app),
+                }
+            except (OSError, ValueError, TypeError):
+                preview["source"] = None
+        return self._json(200, preview)
+
+    def _operator_review(self):
+        """Record a confirmation of server-derived findings or digests.
+        Fail and unknown verdicts are refused. The client cannot supply
+        the file hashes that get written."""
+        req = self._session_body()
+        if req is None:
+            return
+        rid = req.get("run_id") or ""
+        stage = req.get("stage") or ""
+        if not RUN_ID.fullmatch(rid) or stage not in ("input", "disclosure", "source"):
+            return self._json(400, {"error": "Unknown review stage."})
+        with _lock:
+            run = _runs.get(rid)
+            snap = None if run is None else json.loads(json.dumps(run))
+        if snap is None:
+            return self._json(404, {"error": "Unknown local run."})
+        from operator_review import (record_input, record_disclosure,
+                                     record_source, Refused)
+        try:
+            if stage == "input":
+                result = record_input(ROOT, snap, req.get("reviewer"),
+                                      req.get("findings"))
+            elif stage == "disclosure":
+                _root, metas, _prepared = self._planning_prepare(rid)
+                result = record_disclosure(ROOT, rid, metas, req.get("reviewer"),
+                                           req.get("payload_sha256"))
+            else:
+                result = record_source(ROOT, snap, req.get("reviewer"),
+                                       req.get("tree_sha256"))
+        except (Refused, ValueError, OSError, TypeError, KeyError) as exc:
+            return self._json(403, {"error": str(exc) or "Review was not recorded."})
         return self._json(200, result)
 
     def _session_body(self):
@@ -2367,6 +2486,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_local():
             return self._refuse()
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/operator-review":
+            return self._operator_review()
         if path == "/api/planning/select":
             return self._planning_select()
         if path == "/api/planning/generate":
@@ -2407,6 +2528,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_local():
             return self._refuse()
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/operator-review/"):
+            return self._operator_review_preview(path.rsplit("/", 1)[-1])
         if path.startswith("/api/planning/request/"):
             rid = path.rsplit("/", 1)[-1]
             try:
