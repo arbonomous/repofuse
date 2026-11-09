@@ -33,7 +33,7 @@
       <li class="flow-step">7 Verify</li>
       <li class="flow-step">8 Serve</li>
     </ol>
-    <p class="hero-sub">Leave the intent empty. Fail and unknown stop at Check. Replay is the recorded notes example.</p>
+    <p class="hero-sub">Leave the intent empty. A failed or unknown check stops. A warning is stored on this machine and the build continues. Replay is the recorded notes example.</p>
   </div>
   <div class="setup-card">
     <details class="local-connect-card">
@@ -44,7 +44,7 @@
       <button id="local-meta-connect" class="replay-btn">Connect for this session</button>
       <button id="local-meta-disconnect" class="ghost-btn">Disconnect and cancel armed run</button>
       <p id="local-meta-status" class="setup-note">Checking local session...</p>
-      <p class="setup-note">New builds stop for independent review. Runtime support is Python WSGI in Linux containment, without network access. Arbitrary repositories, frontend stacks and external services are not automatically supported. Call limits do not prevent card overage when credits expire or billing is delayed.</p>
+      <p class="setup-note">A failed or unknown check stops the build. A warning is stored on this machine. Generated code runs in Linux containment, without network access, after its bytes are pinned. Call limits do not prevent card overage when credits expire or billing is delayed.</p>
     </details>
     <label class="field-label">Repository A</label>
     <div class="repo-input"><span class="gh-icon">&#9679;</span>
@@ -62,8 +62,8 @@
     <label class="field-label" for="local-run-id">Retained run on this machine</label>
     <input id="local-run-id" placeholder="run-0123456789abcdef" spellcheck="false">
     <button id="open-local-run" class="replay-btn">Open retained local run (no generation)</button>
-    <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events; execution still needs all review gates.</p>
-    <p class="setup-note">Suggest follows the eight steps above. Replay never uses these two repositories.</p>
+    <p id="local-run-message" class="setup-note">Local machine only. Opening a run reads its actual events. A failed or unknown check still stops.</p>
+    <p class="setup-note">Suggest follows the eight steps above. You do not type a name or approve each step. Replay never uses these two repositories.</p>
   </div>
 </section>
 

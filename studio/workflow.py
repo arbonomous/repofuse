@@ -5,7 +5,7 @@ import pathlib
 def read_workflow(server, run):
     rid=run['run_id']; root=pathlib.Path(server.RUNS); status=run.get('status','unknown')
     result={'run_id':rid,'status':status,'generation_started':False,'actions':[],
-            'relay':{'available':False,'detail':'Private review transport is not connected. This page can record the findings and digests Studio just showed. It cannot approve a failed or unknown check.'}}
+            'relay':{'available':False,'detail':'A failed or unknown check stops this build. A warning and the unsent request hash for a clear pair are stored on this machine.'}}
     planning=root/(rid+'-planning')
     ledger=planning/'budget.json'
     if ledger.exists():
