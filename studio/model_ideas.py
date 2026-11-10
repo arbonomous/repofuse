@@ -9,27 +9,40 @@ import re
 
 MAX_EVIDENCE_CHARS = 24000
 MAX_CARDS = 3
-SCHEMA = {
-    'type':'object', 'properties': {'ideas': {'type':'array', 'maxItems':3,
-      'items': {'type':'object', 'properties':{
-        'title':{'type':'string'}, 'what':{'type':'string'},
-        'frontend':{'type':'string'}, 'backend':{'type':'string'},
-        'integration':{'type':'string'}, 'runtime':{'type':'string'},
-        'dependencies':{'type':'array','items':{'type':'string'}},
-        'external_services':{'type':'array','items':{'type':'string'}},
-        'risks':{'type':'array','items':{'type':'string'}},
-        'sources':{'type':'array','items':{'type':'object','properties':{
-          'repo':{'type':'string'},'commit':{'type':'string'},
-          'exports':{'type':'array','maxItems':24,'items':{'type':'string'}}},
-          'required':['repo','commit','exports'], 'additionalProperties':False}},
-      }, 'required':['title','what','frontend','backend','integration','runtime',
-                    'dependencies','external_services','risks','sources'],
-      'additionalProperties':False}}},
-    'required':['ideas'],'additionalProperties':False}
-TEXT_CAPS={'title':100,'what':700,'frontend':700,'backend':700,
+def _idea_schema():
+    # The provider's enforcement of maxLength is unconfirmed, so validate()
+    # repeats these exact caps. Declaring them here keeps the request and
+    # the local rejection on the same bound.
+    text={k:{'type':'string','minLength':1,'maxLength':cap}
+          for k,cap in TEXT_CAPS.items()}
+    lists={k:{'type':'array','maxItems':cap,'items':{
+              'type':'string','minLength':1,'maxLength':ITEM_CAP}}
+           for k,cap in LIST_CAPS.items()}
+    return {
+        'type':'object', 'properties': {'ideas': {'type':'array',
+          'minItems':1, 'maxItems':MAX_CARDS, 'items': {'type':'object',
+          'properties':{
+            **text, **lists,
+            'sources':{'type':'array','minItems':2,'maxItems':2,
+              'items':{'type':'object','properties':{
+                'repo':{'type':'string','minLength':1},
+                'commit':{'type':'string','minLength':40,'maxLength':40},
+                'exports':{'type':'array','minItems':1,'maxItems':24,
+                  'items':{'type':'string','minLength':1}}},
+              'required':['repo','commit','exports'],
+              'additionalProperties':False}},
+          }, 'required':['title','what','frontend','backend','integration',
+                        'runtime','dependencies','external_services','risks',
+                        'sources'],
+          'additionalProperties':False}}},
+        'required':['ideas'],'additionalProperties':False}
+
+
+TEXT_CAPS={'title':100,'what':700,'frontend':700,'backend':1000,
            'integration':900,'runtime':150}
 LIST_CAPS={'dependencies':30,'external_services':12,'risks':12}
 ITEM_CAP=400
+SCHEMA = _idea_schema()
 
 
 class Refused(ValueError):
@@ -146,7 +159,10 @@ def messages(rows):
       'that unresolved needs may be omitted. You may propose other runtimes honestly but '
       'must name needed dependencies/services; never pretend they run here. '
       'No financial advice, trade execution, guarantees of returns, security '
-      'guarantees, or invented live market data. Return only the required JSON.'},
+      'guarantees, or invented live market data. Character caps are exact and '
+      'include spaces: title 100, what 700, frontend 700, backend 1000, '
+      'integration 900, runtime 150. A list item is at most 400 characters. '
+      'Return only the required JSON.'},
       {'role':'user','content':json.dumps({'selected_public_repositories':rows,
         'request':'Suggest distinct full-stack ideas I can choose to build.'},indent=1)}]
 
