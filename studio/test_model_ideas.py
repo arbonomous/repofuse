@@ -33,6 +33,29 @@ def test_schema_bounds_refuse():
  for field,value in [('title','x'*101),('dependencies',['x']*31),('runtime',''),('extra','bad')]:
   c=card();c[field]=value
   with pytest.raises(m.Refused):m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))
+def test_schema_declares_the_same_caps_validate_enforces():
+ item=m.SCHEMA['properties']['ideas']['items']['properties']
+ for key,cap in m.TEXT_CAPS.items():
+  assert item[key]['minLength']==1 and item[key]['maxLength']==cap
+ for key,cap in m.LIST_CAPS.items():
+  assert item[key]['maxItems']==cap and item[key]['items']['maxLength']==m.ITEM_CAP
+ c=card();c['backend']='b'*m.TEXT_CAPS['backend']
+ assert m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))[0]['backend']==c['backend']
+ c['backend']='b'*(m.TEXT_CAPS['backend']+1)
+ with pytest.raises(m.Refused):m.validate(json.dumps({'ideas':[c]}),m.evidence(metas()))
+def test_largest_card_still_fits_the_build_intent():
+ from repofuse.synthesize import MAX_INTENT_CHARS
+ c=card()
+ for key in ('title','what','frontend','backend','integration'):
+  c[key]='x'*m.TEXT_CAPS[key]
+ glued=(c['what']+'. Frontend: '+c['frontend']+'. Backend: '+c['backend']
+        +'. Integration: '+c['integration']
+        +'. Declared dependencies and external services are not installed, and the network stays closed.')
+ assert len(c['title']+'. '+glued)<=MAX_INTENT_CHARS
+def test_prompt_states_the_character_caps():
+ text=m.messages([{'repo':'alpha','commit':'a'*40,'exports_sample':['Alpha']},{'repo':'beta','commit':'b'*40,'exports_sample':['Beta']}])[0]['content']
+ assert 'title 100, what 700, frontend 700, backend 1000' in text
+ assert 'A list item is at most 400 characters.' in text
 def test_no_private_url_or_unpinned_evidence():
  for field,value in [('url','file:///etc/passwd'),('commit_sha','main')]:
   v=metas();v['alpha'][field]=value
